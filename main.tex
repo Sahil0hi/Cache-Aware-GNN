@@ -1,0 +1,102 @@
+\documentclass[sigconf,review]{acmart}
+
+\AtBeginDocument{%
+  \providecommand\BibTeX{{%
+    Bib\TeX}}}
+
+\setcopyright{none}
+\settopmatter{printacmref=false}
+\renewcommand\footnotetextcopyrightpermission[1]{}
+
+
+\begin{document}
+
+\title{Project Proposal: Cache-Aware Graph Reordering for Efficient Graph Neural Network Execution on GPUs}
+
+\author{Sahil Murtaza}
+\affiliation{%
+  \institution{University of Virginia}
+  \city{Charlottesville}
+  \country{USA}
+}
+\email{vpn9ej@virginia.edu}
+
+\begin{abstract}
+Graph Neural Networks (GNNs) and Graph Transformers suffer from significant hardware inefficiencies during training due to the irregular and sparse nature of graph data. When aggregating neighbor features, GPUs experience high cache miss rates as threads are forced to fetch data from non-contiguous physical memory locations in High Bandwidth Memory (HBM). This proposal outlines a project to investigate, implement, and benchmark cache-aware node reordering algorithms (such as Reverse Cuthill-McKee and METIS) as a pre-processing step for GNN execution. By systematically transforming the adjacency matrix layout, we aim to maximize spatial locality, increase L2 cache hit rates, and accelerate overall epoch training time without altering the underlying mathematical models or prediction accuracy.
+\end{abstract}
+
+\keywords{Graph Neural Networks, GPU Architecture, Memory Coalescing, Node Reordering, Cache Optimization}
+
+\maketitle
+
+\section{Introduction: The Problem}
+The dominant bottleneck in accelerating Graph Neural Networks (GNNs) is the ``Memory Wall.'' Modern GPUs are heavily optimized for dense, contiguous matrix multiplications (GEMMs), which achieve massive speedups through memory coalescing. However, real-world graphs are highly sparse and topologically irregular.
+
+During the message-passing phase of a GNN, a node updates its representation by aggregating features from its local neighborhood. Mathematically, this relies on sparse matrix-vector multiplication (SpMV). A standard update rule at layer $l$ is defined as:
+\begin{equation}
+    h_i^{(l+1)} = \sigma \left( \sum_{j \in \mathcal{N}(i)} W^{(l)} h_j^{(l)} \right)
+\end{equation}
+Because the neighbors $j \in \mathcal{N}(i)$ are scattered randomly across the adjacency matrix, GPU threads must fetch memory from non-contiguous physical addresses. This irregularity causes severe cache misses, forcing the compute cores to stall while data is fetched from slower High Bandwidth Memory (HBM) rather than the fast L1/L2 SRAM caches.
+
+This project aims to solve this by optimizing the memory layout of graph data prior to training. By computing a permutation matrix $P$ to reassign node IDs, we can cluster connected nodes closer together in memory, making GNN computations fundamentally more cache-friendly.
+
+\section{Existing Literature}
+The intersection of graph layout optimization and deep learning systems is a highly active research area. This project builds upon several foundational and contemporary works:
+
+\begin{itemize}
+    \item \textbf{Rabbit Order (Arai et al., 2016) \cite{arai2016rabbit}:} Introduced hierarchical, community-based node reordering to map graph topologies to underlying cache hierarchies.
+    \item \textbf{GNNAdvisor (Wang et al., 2021) \cite{wang2021gnnadvisor}:} A seminal systems paper introducing 2D workload management and lightweight node renumbering to improve spatial locality for GNNs on NVIDIA GPUs.
+    \item \textbf{Empirical Graph Reordering (Bayer et al., 2024) \cite{bayer2024reordering}:} A recent study evaluating diverse reordering strategies on PyTorch Geometric, proving that lightweight algorithmic reordering effectively reduces GPU-based training time.
+\end{itemize}
+
+\section{Methodology}
+
+\subsection{Datasets}
+We will utilize medium-to-large-scale datasets from the Open Graph Benchmark (OGB), specifically designed to expose hardware memory bottlenecks:
+\begin{itemize}
+    \item \textbf{\texttt{ogbn-arxiv}:} A paper citation network comprising 169K nodes and 1.1M edges.
+    \item \textbf{\texttt{ogbn-products}:} An Amazon co-purchasing network comprising 2.4M nodes and 61.8M edges.
+\end{itemize}
+Data will be programmatically acquired and parsed using the official \texttt{torch\_geometric.datasets} API.
+
+\subsection{Algorithms and Techniques}
+\textbf{A. Workload Models:} We will benchmark reordering techniques across two standard architectures implemented in PyTorch Geometric:
+\begin{enumerate}
+    \item \textit{GraphSAGE}: To profile memory accesses during neighbor sampling.
+    \item \textit{Graph Attention Network (GAT)}: To profile memory accesses during dense attention coefficient calculations.
+\end{enumerate}
+
+\textbf{B. Node Reordering Algorithms:} An offline pre-processing pipeline will apply permutation matrices to the graph's adjacency and feature matrices using:
+\begin{itemize}
+    \item \textbf{Reverse Cuthill-McKee (RCM):} Implemented via \texttt{scipy.sparse.csgraph}. This algorithm minimizes the bandwidth of the sparse adjacency matrix, clustering non-zero elements strictly near the diagonal.
+    \item \textbf{METIS Community Partitioning:} Using the \texttt{pymetis} library to identify dense subgraphs and renumber nodes sequentially within those communities, maximizing spatial locality.
+\end{itemize}
+
+\subsection{Hardware Profiling}
+To prove the root cause of any observed speedups, we will utilize \textbf{NVIDIA Nsight Compute (\texttt{ncu})}. Custom bash scripts will profile the compiled CUDA kernels during PyTorch execution to extract hardware-level L2 Cache metrics.
+
+\section{Evaluation Plan}
+The project will be evaluated quantitatively through a rigorous ablation study comparing baseline graphs (random/default ordering) against reordered graphs. 
+
+\begin{itemize}
+    \item \textbf{Primary Systems Metric:} Epoch Training Time (milliseconds/epoch). We target a 15--30\% latency reduction.
+    \item \textbf{Secondary Hardware Metric:} L2 Cache Hit Rate and DRAM Read/Write throughput (via \texttt{ncu}).
+    \item \textbf{Machine Learning Sanity Check:} Node Classification Accuracy. This must remain mathematically identical to the baseline to prove the layout transformation is lossless.
+\end{itemize}
+
+\section{Timeline and Expected Outcomes}
+Assuming an 8-week timeline:
+\begin{itemize}
+    \item \textbf{Weeks 1--2:} Environment setup, dataset acquisition, baseline model implementation, and initial timing benchmarks.
+    \item \textbf{Weeks 3--4:} Pipeline development. Implementation of RCM and METIS algorithms and validation of PyG tensor compatibility.
+    \item \textbf{Weeks 5--6:} Execution and profiling. Running models on reordered datasets and extracting \texttt{ncu} metrics.
+    \item \textbf{Weeks 7--8:} Analysis, data visualization (adjacency matrix sparsity patterns), and final report generation.
+\end{itemize}
+
+\textbf{Expected Outcomes:} 
+(1) A reusable PyTorch pipeline for automatic graph cache-optimization. (2) A comprehensive benchmarking report detailing the exact relationship between graph layout, GPU L2 cache hit rates, and GNN training latency.
+
+\bibliographystyle{ACM-Reference-Format}
+\bibliography{references}
+
+\end{document}

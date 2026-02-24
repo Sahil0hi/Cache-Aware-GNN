@@ -1,4 +1,4 @@
-PRJ = sample-sigconf
+PRJ = main
 
 # Small cheat to allow synchronization between PDF and .tex for supported editors (run `make S=1`)
 ifdef S
