@@ -1,4 +1,4 @@
-PRJ = main
+PRJ = Graph_ML_Project/main
 
 # Small cheat to allow synchronization between PDF and .tex for supported editors (run `make S=1`)
 ifdef S
