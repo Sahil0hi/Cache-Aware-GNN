@@ -8,3 +8,4 @@ cd Graph_ML_Project
 make view        # build and open PDF
 # or manually:
 pdflatex main.tex && bibtex main && pdflatex main.tex && pdflatex main.tex
+

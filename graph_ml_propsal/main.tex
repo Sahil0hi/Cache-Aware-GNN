@@ -1,0 +1,255 @@
+\documentclass[sigconf,review]{acmart}
+
+\AtBeginDocument{%
+  \providecommand\BibTeX{{%
+    Bib\TeX}}}
+
+\setcopyright{none}
+\settopmatter{printacmref=false}
+\renewcommand\footnotetextcopyrightpermission[1]{}
+
+\usepackage{amsmath}
+\usepackage{amssymb}
+
+\begin{document}
+
+\title{Project Proposal: Cache-Aware Graph Reordering for Efficient Graph Neural Network Execution on GPUs}
+
+\author{Sahil Murtaza}
+\affiliation{%
+  \institution{University of Virginia}
+  \city{Charlottesville}
+  \country{USA}
+}
+\email{vpn9ej@virginia.edu}
+
+\author{Youke Zhang}
+\affiliation{%
+  \institution{University of Virginia}
+  \city{Charlottesville}
+  \country{USA}
+}
+\email{nfz5mv@virginia.edu}
+
+\author{Zach Yu}
+\affiliation{%
+  \institution{University of Virginia}
+  \city{Charlottesville}
+  \country{USA}
+}
+\email{rqx6rs@virginia.edu}
+
+\author{Albert Liu}
+\affiliation{%
+  \institution{University of Virginia}
+  \city{Charlottesville}
+  \country{USA}
+}
+\email{htr5xa@virginia.edu}
+
+\begin{abstract}
+Graph Neural Networks (GNNs) suffer from significant hardware inefficiencies during training due to the irregular, sparse structure of real-world graphs. During neighbor aggregation, GPU threads must fetch feature vectors from non-contiguous memory locations, leading to poor spatial locality and high cache miss rates in the L2 cache and HBM subsystem. This proposal outlines a project to investigate, implement, and benchmark \emph{cache-aware node reordering} as a lossless pre-processing step for GNN training. We formalize graph reordering as finding an optimal permutation $\pi$ of the node index set that minimizes a matrix bandwidth or graph partitioning objective. We plan to implement and compare two concrete algorithms---Reverse Cuthill-McKee (RCM) and METIS-based community reordering---and measure their impact on GPU L2 cache hit rates and epoch training latency across standard Open Graph Benchmark datasets. Because reordering is a relabeling that commutes with all GNN operators, prediction accuracy is guaranteed to remain identical to the baseline.
+\end{abstract}
+
+\keywords{Graph Neural Networks, GPU Architecture, Cache Optimization, Node Reordering, Sparse Matrix Bandwidth, Graph Partitioning}
+
+\maketitle
+
+%% ====================================================================
+\section{Introduction: The Problem}
+%% ====================================================================
+
+The dominant bottleneck in accelerating Graph Neural Networks (GNNs) on GPUs is the \emph{memory wall}. Modern GPU architectures are optimized for dense, contiguous general matrix multiplications (GEMMs), which exploit memory coalescing to saturate compute throughput. Real-world graphs, however, are highly sparse and topologically irregular, causing the core message-passing operations of GNNs to devolve into \emph{scatter--gather} memory access patterns that defeat HBM coalescing and L2 cache reuse.
+
+\paragraph{Message-Passing as Sparse Computation.}
+Consider a GNN with $L$ layers operating on an undirected graph $G = (V, E)$ with $n = |V|$ nodes and adjacency matrix $A \in \{0,1\}^{n \times n}$. Let $H^{(l)} \in \mathbb{R}^{n \times d_l}$ denote the matrix of node features at layer $l$, where $d_l$ is the hidden dimension. The canonical message-passing update for node $i$ at layer $l$ is:
+\begin{equation}\label{eq:mp}
+    h_i^{(l+1)} = \sigma\!\Bigl( W^{(l)}\!\!\sum_{j \in \mathcal{N}(i)} \!\!c_{ij}\, h_j^{(l)} \Bigr),
+\end{equation}
+where $W^{(l)} \in \mathbb{R}^{d_{l+1}\times d_l}$ is a learnable weight matrix, $c_{ij}$ is a normalization coefficient (e.g.\ $c_{ij} = 1/\!\sqrt{\deg(i)\deg(j)}$ for GCN \cite{kipf2017gcn}), and $\sigma$ is a non-linearity. Written over all nodes simultaneously, the aggregation step is a sparse matrix--dense matrix multiplication (SpMM):
+\begin{equation}\label{eq:spmm}
+    \hat{H}^{(l)} = \tilde{A}\, H^{(l)}, \qquad \tilde{A} = D^{-1/2} A\, D^{-1/2},
+\end{equation}
+where $D = \operatorname{diag}(\deg(1),\dots, \deg(n))$. In memory, $\tilde{A}$ is stored in Compressed Sparse Row (CSR) format. Row $i$ of the CSR structure lists the column indices of the non-zero entries; these indices determine \emph{which rows of $H^{(l)}$} must be fetched during aggregation.
+
+\paragraph{Why Random Orderings Cause Cache Misses.}
+If the node indices are assigned arbitrarily (e.g.\ by order of ingestion), connected nodes can have indices that are far apart. In CSR storage, the column indices in row~$i$ will scatter across a wide range, causing the GPU to request rows of $H^{(l)}$ from distant memory addresses.  Since the L2 cache on modern NVIDIA GPUs (e.g.\ 40\,MB on A100) can only hold a small fraction of $H^{(l)}$ for large graphs, these distant accesses trigger \emph{capacity and conflict misses}. Each cache miss forces a 128-byte sector fetch from HBM, stalling the streaming multiprocessors (SMs) and leaving compute units idle.
+
+\paragraph{Project Goal.}
+We aim to find a permutation $\pi : V \to V$ of the node index set such that, after relabeling every node $i$ as $\pi(i)$, connected nodes tend to receive \emph{nearby} indices. This makes the non-zero entries of $\tilde{A}$ cluster near the main diagonal, so the SpMM in Eq.~\eqref{eq:spmm} accesses rows of $H^{(l)}$ that are close in memory address space and thus more likely to reside in the same L2 cache line.
+
+%% ====================================================================
+\section{Mathematical Formulation of Graph Reordering}
+\label{sec:math}
+%% ====================================================================
+
+\subsection{Permutations and the Reordered System}
+
+Let $\pi$ be a permutation on $\{1,\dots,n\}$ and let $P \in \{0,1\}^{n\times n}$ be the associated permutation matrix, defined by $P_{ij} = 1$ iff $\pi(i) = j$. Applying $\pi$ to the graph yields the reordered adjacency matrix
+\begin{equation}\label{eq:perm}
+    A' = P\, A\, P^\top.
+\end{equation}
+Because $P$ is orthogonal ($P^\top P = I$), this is a similarity transform that preserves the spectrum of $A$ and all structural invariants. The reordered feature matrix and degree matrix are
+\begin{equation}
+    H'^{(l)} = P\, H^{(l)}, \qquad D' = P\, D\, P^\top.
+\end{equation}
+Since the GNN update in Eq.~\eqref{eq:mp} is \emph{equivariant} to node relabeling, training on $(A', H'^{(0)})$ produces the same per-node outputs as training on $(A, H^{(0)})$ up to the same permutation, and thus the same classification or regression loss. Reordering is therefore a \emph{lossless} transformation.
+
+\subsection{Bandwidth Minimization}
+\label{sec:bandwidth}
+
+The \textbf{bandwidth} of a matrix $A$ under ordering $\pi$ is
+\begin{equation}\label{eq:bw}
+    B_\pi(A) = \max_{(i,j)\in E} \bigl|\pi(i) - \pi(j)\bigr|.
+\end{equation}
+A small bandwidth means every non-zero entry $A'_{\pi(i),\pi(j)}$ lies within $B_\pi(A)$ positions of the diagonal. During SpMM, this guarantees that the column indices in any CSR row span an interval of width at most $B_\pi(A)$, so the rows of $H'^{(l)}$ accessed by a single aggregation step lie within a contiguous memory region of size $B_\pi(A) \cdot d_l$ floats, improving cache line reuse.
+
+\textbf{Bandwidth minimization} seeks
+\begin{equation}\label{eq:bwmin}
+    \pi^* = \arg\min_\pi\; B_\pi(A),
+\end{equation}
+which is NP-hard in general \cite{papadimitriou1976nphard}. In practice, heuristics such as Cuthill-McKee (CM) and its reversal (RCM) \cite{cuthill1969bandwidth} provide near-optimal results for many graph families.
+
+\subsection{The Reverse Cuthill-McKee (RCM) Algorithm}
+\label{sec:rcm}
+
+The Cuthill-McKee algorithm is a breadth-first-search-based heuristic for bandwidth reduction. Given graph $G$:
+\begin{enumerate}
+    \item \textbf{Peripheral seed selection.} Choose a starting node $s$ with small eccentricity (often found by a two-sweep heuristic: pick an arbitrary node, BFS to find the farthest node, then BFS again from that node).
+    \item \textbf{Level-set traversal.} Initialize queue $Q = \{s\}$ and an empty ordering list $R$. While $Q$ is non-empty:
+    \begin{enumerate}
+        \item Dequeue a node $v$ from $Q$ and append $v$ to $R$.
+        \item Enqueue the unvisited neighbors of $v$ in \emph{ascending degree order}.
+    \end{enumerate}
+    \item \textbf{Reversal.} The Reverse Cuthill-McKee ordering is $\pi_{\text{RCM}}(i) = R[n - i]$ (i.e., reverse the list $R$).
+\end{enumerate}
+
+The reversal step often further reduces bandwidth in practice. The overall complexity is $O(|E| \log |E|)$ due to the neighbor-sorting step. We will use the \texttt{scipy.sparse.csgraph.reverse\_cuthill\_mckee} implementation, which returns the permutation vector $\pi$ directly.
+
+\subsection{The METIS Graph Partitioning Objective}
+\label{sec:metis}
+
+METIS \cite{karypis1998metis} partitions $V$ into $k$ disjoint subsets $V_1, \dots, V_k$ by minimizing the \textbf{edge cut}:
+\begin{equation}\label{eq:edgecut}
+    \text{EdgeCut}(V_1,\dots,V_k) = \bigl|\{(i,j) \in E : i \in V_p,\; j \in V_q,\; p \neq q\}\bigr|,
+\end{equation}
+subject to a balance constraint $|V_p| \le (1+\epsilon)\, n/k$ for all $p$. Minimizing the edge cut maximizes the fraction of edges whose endpoints share the same partition. We construct the reordering permutation $\pi_{\text{METIS}}$ by numbering all nodes in $V_1$ first (indices $1,\dots,|V_1|$), then all nodes in $V_2$, and so on:
+\begin{equation}\label{eq:metis_perm}
+    \pi_{\text{METIS}}(v) = \sum_{q=1}^{p-1} |V_q| + \text{rank}(v, V_p), \qquad v \in V_p,
+\end{equation}
+where $\text{rank}(v,V_p)$ is the position of $v$ within partition $V_p$ (ordered arbitrarily, or recursively by a nested bisection). This produces a block-diagonal-like structure in $A'$: intra-partition edges form dense diagonal blocks of size $\approx n/k$, while the minimized inter-partition edges appear as sparse off-diagonal entries. During SpMM, the GPU processes rows within a partition whose column indices fall predominantly within the same block, causing the required rows of $H'^{(l)}$ to reside in a contiguous $\approx (n/k)\cdot d_l$-float region that fits well in L2 cache.
+
+The number of partitions $k$ is a tunable hyperparameter: larger $k$ yields smaller blocks (better L2 fit) but more inter-partition edges (more off-diagonal scatter). We will sweep $k \in \{4, 8, 16, 32, 64\}$ and report the Pareto trade-off between edge cut fraction and cache hit rate.
+
+\subsection{Comparison of Objectives}
+\label{sec:compare}
+
+Table~\ref{tab:compare} summarizes the two reordering strategies.
+
+\begin{table}[h]
+\caption{Comparison of the two reordering objectives.}
+\label{tab:compare}
+\centering
+\small
+\begin{tabular}{lcc}
+\toprule
+\textbf{Property} & \textbf{RCM} & \textbf{METIS} \\
+\midrule
+Objective & Min bandwidth $B_\pi$ & Min edge cut \\
+Structure of $A'$ & Band-diagonal & Block-diagonal \\
+Complexity & $O(|E|\log|E|)$ & $O(|E|)$ amortized \\
+Tuning & Seed selection & Partition count $k$ \\
+Best for & Low-diameter graphs & Community-rich graphs \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+%% ====================================================================
+\section{Existing Literature}
+%% ====================================================================
+
+The intersection of graph layout optimization and deep learning systems is a highly active area. This project builds upon several foundational and contemporary works:
+
+\begin{itemize}
+    \item \textbf{Cuthill \& McKee (1969) \cite{cuthill1969bandwidth}:} Introduced the BFS-based bandwidth reduction heuristic for sparse matrices; the reversed variant (RCM) remains a standard pre-processing step in finite-element solvers.
+    \item \textbf{METIS (Karypis \& Kumar, 1998) \cite{karypis1998metis}:} Developed a multilevel $k$-way graph partitioning algorithm that coarsens the graph, partitions the coarsened version, and then uncoarsens with local refinement, achieving near-linear time.
+    \item \textbf{Rabbit Order (Arai et al., 2016) \cite{arai2016rabbit}:} Introduced hierarchical community-based node reordering that maps graph topology to cache hierarchy levels.
+    \item \textbf{GCN (Kipf \& Welling, 2017) \cite{kipf2017gcn}:} Formalized the spectral-motivated convolutional layer that makes the SpMM in Eq.~\eqref{eq:spmm} the computational core of graph learning.
+    \item \textbf{GNNAdvisor (Wang et al., 2021) \cite{wang2021gnnadvisor}:} Introduced 2D workload management and lightweight node renumbering to improve spatial locality for GNN kernels on NVIDIA GPUs.
+    \item \textbf{Bayer et al.\ (2024) \cite{bayer2024reordering}:} Provided an empirical study evaluating diverse reordering strategies on PyTorch Geometric, demonstrating that even lightweight algorithmic reordering can reduce GPU training time by up to 30\%.
+\end{itemize}
+
+%% ====================================================================
+\section{Methodology}
+%% ====================================================================
+
+\subsection{Datasets}
+We will use medium-to-large-scale datasets from the Open Graph Benchmark (OGB) \cite{hu2020ogb}, selected to expose hardware memory bottlenecks at two different scales:
+
+\begin{itemize}
+    \item \textbf{\texttt{ogbn-arxiv}} (169K nodes, 1.1M edges): A citation network of arXiv papers with 128-dimensional word2vec features. Small enough for rapid iteration but large enough to observe cache effects.
+    \item \textbf{\texttt{ogbn-products}} (2.4M nodes, 61.8M edges): An Amazon co-purchasing network. At this scale, the feature matrix $H \in \mathbb{R}^{2.4\text{M}\times 100}$ occupies $\sim$960\,MB, substantially exceeding the 40\,MB L2 cache on an A100 GPU.
+\end{itemize}
+Data will be acquired programmatically via the \texttt{torch\_geometric.datasets} API.
+
+\subsection{GNN Architectures (Workload Models)}
+We benchmark reordering across two architectures that exercise different memory access patterns:
+\begin{enumerate}
+    \item \textbf{GraphSAGE \cite{hamilton2017sage}:} Samples a fixed-size neighborhood per node; the sampled column indices determine the memory footprint per aggregation. Reordering affects the spatial coherence of sampled indices.
+    \item \textbf{Graph Attention Network (GAT) \cite{velickovic2018gat}:} Computes attention coefficients $\alpha_{ij}$ over all neighbors before aggregation, requiring \emph{two} accesses to each neighbor's features (once for attention, once for weighted sum). This doubles the cache pressure per edge, amplifying the benefit of locality.
+\end{enumerate}
+
+\subsection{Reordering Pipeline}
+The offline pre-processing pipeline operates as follows:
+\begin{enumerate}
+    \item Load the graph $(A, H^{(0)}, y)$ from OGB.
+    \item Compute the permutation vector $\pi$ using either RCM (\S\ref{sec:rcm}) or METIS (\S\ref{sec:metis}).
+    \item Construct the permutation matrix $P$ and apply Eq.~\eqref{eq:perm}: set $A' = P A P^\top$, $H'^{(0)} = P H^{(0)}$, and $y' = P y$.
+    \item Rebuild the CSR/COO edge index for PyTorch Geometric and proceed with standard training.
+\end{enumerate}
+Implementation will use \texttt{scipy.sparse.csgraph.reverse\_cuthill\_mckee} for RCM and the \texttt{pymetis} Python binding for METIS.
+
+\subsection{Hardware Profiling}
+To establish a causal link between reordering and performance, we will profile the compiled CUDA kernels using \textbf{NVIDIA Nsight Compute (\texttt{ncu})}. Key metrics include:
+\begin{itemize}
+    \item \texttt{l2\_cache\_hit\_rate}: fraction of L2 sector requests serviced without going to HBM.
+    \item \texttt{dram\_read\_throughput}: sustained HBM read bandwidth, which should \emph{decrease} after reordering if fewer cache misses occur.
+    \item \texttt{sm\_occupancy}: warp occupancy, which may increase if fewer warps are stalled on memory.
+\end{itemize}
+
+%% ====================================================================
+\section{Evaluation Plan}
+%% ====================================================================
+
+The project will be evaluated through a controlled ablation study comparing baseline graphs (original ordering) against each reordered variant.
+
+\begin{itemize}
+    \item \textbf{Primary Systems Metric --- Epoch Training Time.} Mean wall-clock time per epoch (ms/epoch), averaged over 50 epochs after a 10-epoch warmup. We target a 15--30\% latency reduction, consistent with prior work \cite{bayer2024reordering}.
+    \item \textbf{Secondary Hardware Metric --- L2 Cache Hit Rate.} Measured via \texttt{ncu} on the SpMM kernels. We expect reordered graphs to improve the L2 hit rate by 10--40 percentage points on \texttt{ogbn-products}.
+    \item \textbf{ML Sanity Check --- Node Classification Accuracy.} Because reordering is a similarity transform (Eq.~\eqref{eq:perm}), accuracy must remain \emph{identical} to the baseline within floating-point tolerance. Any deviation would indicate a bug in the pipeline, not a property of the method.
+\end{itemize}
+
+%% ====================================================================
+\section{Project Timeline and Expected Outcomes}
+%% ====================================================================
+
+The project is organized into four sequential phases:
+
+\begin{enumerate}
+    \item \textbf{Environment and Baselines.} Set up the GPU profiling environment, acquire OGB datasets, implement baseline GraphSAGE and GAT models, and record initial timing and cache metrics.
+    \item \textbf{Reordering Pipeline.} Implement the RCM and METIS reordering pipelines, validate correctness by checking that $A' = PAP^\top$ preserves the edge set, and verify that classification accuracy is unchanged.
+    \item \textbf{Execution and Profiling.} Run reordered training at scale, sweep METIS's partition count $k$, collect \texttt{ncu} hardware traces, and build the ablation table.
+    \item \textbf{Analysis and Reporting.} Visualize adjacency matrix sparsity patterns (before/after), plot the cache hit rate vs.\ training time Pareto frontier, and assemble the final report.
+\end{enumerate}
+
+\paragraph{Expected Outcomes.}
+\begin{enumerate}
+    \item A reusable, open-source PyTorch Geometric pipeline for automatic cache-aware graph reordering.
+    \item A benchmarking report quantifying the relationship between matrix bandwidth (Eq.~\eqref{eq:bw}), edge cut (Eq.~\eqref{eq:edgecut}), GPU L2 cache hit rate, and GNN training latency.
+    \item Guidelines for practitioners on \emph{when} each reordering strategy is most beneficial (graph size, density, community structure).
+\end{enumerate}
+
+\bibliographystyle{ACM-Reference-Format}
+\bibliography{references}
+
+\end{document}
