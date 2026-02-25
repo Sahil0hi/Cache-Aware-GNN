@@ -20,3 +20,4 @@
 .latexrun.db*
 *.toc
 old
+*.png
