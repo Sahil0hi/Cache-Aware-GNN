@@ -7,6 +7,7 @@
 \setcopyright{none}
 \settopmatter{printacmref=false}
 \renewcommand\footnotetextcopyrightpermission[1]{}
+\acmConference{}{}{}
 
 \usepackage{amsmath}
 
@@ -203,12 +204,7 @@ We benchmark reordering across two architectures that exercise different memory 
 
 
 \subsection{Hardware Profiling}
-To establish a causal link between reordering and performance, we will profile the compiled CUDA kernels using \textbf{NVIDIA Nsight Compute (\texttt{ncu})}. Key metrics include:
-\begin{itemize}
-    \item \texttt{l2\_cache\_hit\_rate}: fraction of L2 sector requests serviced without going to HBM.
-    \item \texttt{dram\_read\_throughput}: sustained HBM read bandwidth, which should \emph{decrease} after reordering if fewer cache misses occur.
-    \item \texttt{sm\_occupancy}: warp occupancy, which may increase if fewer warps are stalled on memory.
-\end{itemize}
+To establish a causal link between reordering and performance, we will profile the compiled CUDA kernels using \textbf{NVIDIA Nsight Compute (\texttt{ncu})} to measure \texttt{l2\_cache\_hit\_rate}: the fraction of L2 sector requests serviced without going to HBM.
 
 %% ====================================================================
 \section{Evaluation Plan}
