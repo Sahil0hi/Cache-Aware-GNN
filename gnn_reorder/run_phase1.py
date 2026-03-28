@@ -31,6 +31,21 @@ import torch.nn.functional as F
 from ogb.nodeproppred import PygNodePropPredDataset
 from torch_geometric.loader import NeighborLoader
 
+
+# PyTorch 2.6 changed torch.load default to weights_only=True.
+# OGB's cached dataset files include torch_geometric globals that must be
+# allowlisted so they can be deserialized safely.
+try:
+    import torch_geometric.data.data as _pyg_data
+    _safe_globals = [
+        _pyg_data.DataEdgeAttr,
+        _pyg_data.DataTensorAttr,
+        _pyg_data.GlobalStorage,
+    ]
+    torch.serialization.add_safe_globals(_safe_globals)
+except (ImportError, AttributeError):
+    pass  # older PyG / PyTorch versions don't need this
+
 sys.path.insert(0, os.path.dirname(__file__))
 
 from models.graphsage import GraphSAGE
