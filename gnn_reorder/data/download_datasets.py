@@ -9,6 +9,35 @@ import os
 import torch
 from ogb.nodeproppred import PygNodePropPredDataset
 
+import torch.serialization
+
+# Allowlist PyG classes for PyTorch 2.6+ weights_only loading
+try:
+    from torch_geometric.data.data import DataEdgeAttr
+    # You may also need NodeStorage or EdgeStorage depending on the dataset
+    from torch_geometric.data.storage import GlobalStorage, NodeStorage, EdgeStorage
+    
+    torch.serialization.add_safe_globals([DataEdgeAttr, GlobalStorage, NodeStorage, EdgeStorage])
+except ImportError:
+    # Fallback for environments where PyG is not yet fully initialized
+    pass
+
+
+
+import torch.serialization
+try:
+    from torch_geometric.data.data import DataEdgeAttr, DataTensorAttr
+    from torch_geometric.data.storage import GlobalStorage, NodeStorage, EdgeStorage
+    torch.serialization.add_safe_globals([
+        DataEdgeAttr, 
+        DataTensorAttr, 
+        GlobalStorage, 
+        NodeStorage, 
+        EdgeStorage
+    ])
+except ImportError:
+    pass
+
 SUPPORTED = ["ogbn-arxiv", "ogbn-products"]
 DEFAULT_ROOT = os.path.join(os.path.dirname(__file__), "..", "datasets")
 
