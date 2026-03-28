@@ -86,17 +86,62 @@ class GPUData:
 
 
 # ---------------------------------------------------------------------------
+# CUDA event helpers
+# ---------------------------------------------------------------------------
+
+def _cuda_events():
+    """Return a pair of CUDA events (start, end) with timing enabled."""
+    return (
+        torch.cuda.Event(enable_timing=True),
+        torch.cuda.Event(enable_timing=True),
+    )
+
+
+def _elapsed_ms(start, end):
+    """Synchronise and return elapsed time in ms between two CUDA events."""
+    torch.cuda.synchronize()
+    return start.elapsed_time(end)
+
+
+# ---------------------------------------------------------------------------
 # Full-batch training  (ogbn-arxiv)
 # ---------------------------------------------------------------------------
 
 def train_fullbatch(model, gdata, optimizer):
+    """
+    Returns (loss, fwd_ms, bwd_ms, opt_ms) measured with CUDA events.
+    Falls back gracefully to (loss, 0, 0, 0) on CPU.
+    """
     model.train()
     optimizer.zero_grad()
+
+    use_cuda = gdata.x.is_cuda
+    if use_cuda:
+        e0s, e0e = _cuda_events()   # forward
+        e1s, e1e = _cuda_events()   # backward
+        e2s, e2e = _cuda_events()   # optimizer
+
+    if use_cuda: e0s.record()
     out  = model(gdata.x, gdata.edge_index)
     loss = F.cross_entropy(out[gdata.train_idx], gdata.y[gdata.train_idx])
+    if use_cuda: e0e.record()
+
+    if use_cuda: e1s.record()
     loss.backward()
+    if use_cuda: e1e.record()
+
+    if use_cuda: e2s.record()
     optimizer.step()
-    return loss.item()
+    if use_cuda: e2e.record()
+
+    if use_cuda:
+        fwd_ms = _elapsed_ms(e0s, e0e)
+        bwd_ms = _elapsed_ms(e1s, e1e)
+        opt_ms = _elapsed_ms(e2s, e2e)
+    else:
+        fwd_ms = bwd_ms = opt_ms = 0.0
+
+    return loss.item(), fwd_ms, bwd_ms, opt_ms
 
 
 @torch.no_grad()
@@ -136,22 +181,48 @@ def make_loaders(data, split_idx, neighbor_sizes, batch_size):
 
 
 def train_minibatch(model, loader, optimizer, device):
-    """Run one full epoch over all training batches."""
+    """
+    Run one full epoch over all training batches.
+    Returns (avg_loss, fwd_ms, bwd_ms, opt_ms) accumulated over all batches.
+    """
     model.train()
     total_loss = total_examples = 0
+    total_fwd = total_bwd = total_opt = 0.0
+    use_cuda = (device.type == "cuda")
+
     for batch in loader:
         batch = batch.to(device)
         optimizer.zero_grad()
-        # Only the first batch_size nodes are the "seed" (labelled) nodes
-        n = batch.batch_size
+        n = batch.batch_size   # seed nodes only
+
+        if use_cuda:
+            e0s, e0e = _cuda_events()
+            e1s, e1e = _cuda_events()
+            e2s, e2e = _cuda_events()
+
+        if use_cuda: e0s.record()
         out  = model(batch.x, batch.edge_index)[:n]
         y    = batch.y.squeeze(1)[:n]
         loss = F.cross_entropy(out, y)
+        if use_cuda: e0e.record()
+
+        if use_cuda: e1s.record()
         loss.backward()
+        if use_cuda: e1e.record()
+
+        if use_cuda: e2s.record()
         optimizer.step()
+        if use_cuda: e2e.record()
+
+        if use_cuda:
+            total_fwd += _elapsed_ms(e0s, e0e)
+            total_bwd += _elapsed_ms(e1s, e1e)
+            total_opt += _elapsed_ms(e2s, e2e)
+
         total_loss    += float(loss) * n
         total_examples += n
-    return total_loss / total_examples
+
+    return total_loss / total_examples, total_fwd, total_bwd, total_opt
 
 
 @torch.no_grad()
@@ -215,13 +286,22 @@ def run_model(
     optimizer = torch.optim.Adam(model.parameters(), lr=0.01, weight_decay=5e-4)
     timer = EpochTimer(warmup=warmup)
 
+    # Accumulators for CUDA event timings across measured epochs
+    phase_fwd_ms: list[float] = []
+    phase_bwd_ms: list[float] = []
+    phase_opt_ms: list[float] = []
+
     # ---- Full-batch path (ogbn-arxiv) --------------------------------------
     if use_fullbatch:
         gdata = GPUData(data, split_idx, device)
         for epoch in range(1, warmup + epochs + 1):
             timer.start()
-            train_fullbatch(model, gdata, optimizer)
+            _, fwd, bwd, opt = train_fullbatch(model, gdata, optimizer)
             timer.stop()
+            if epoch > warmup:           # only record measured epochs
+                phase_fwd_ms.append(fwd)
+                phase_bwd_ms.append(bwd)
+                phase_opt_ms.append(opt)
         acc = eval_fullbatch(model, gdata)
 
     # ---- Mini-batch path (ogbn-products) -----------------------------------
@@ -229,8 +309,12 @@ def run_model(
         train_loader, val_loader = make_loaders(data, split_idx, neighbor_sizes, batch_size)
         for epoch in range(1, warmup + epochs + 1):
             timer.start()
-            train_minibatch(model, train_loader, optimizer, device)
+            _, fwd, bwd, opt = train_minibatch(model, train_loader, optimizer, device)
             timer.stop()
+            if epoch > warmup:
+                phase_fwd_ms.append(fwd)
+                phase_bwd_ms.append(bwd)
+                phase_opt_ms.append(opt)
         val_acc = eval_minibatch(model, val_loader, device)
         acc = {"train": float("nan"), "valid": val_acc, "test": float("nan")}
         print(f"  (train/test acc skipped for speed on large graph)")
@@ -245,17 +329,32 @@ def run_model(
     for k, v in summary.items():
         print(f"  {k}: {v}")
 
+    # CUDA event phase summary
+    def _mean(lst): return round(sum(lst) / len(lst), 3) if lst else float("nan")
+    mean_fwd = _mean(phase_fwd_ms)
+    mean_bwd = _mean(phase_bwd_ms)
+    mean_opt = _mean(phase_opt_ms)
+    if device.type == "cuda":
+        print(f"\n[{model_name}] CUDA phase timing (mean over {len(phase_fwd_ms)} epochs):")
+        print(f"  forward  : {mean_fwd:8.3f} ms")
+        print(f"  backward : {mean_bwd:8.3f} ms")
+        print(f"  optimizer: {mean_opt:8.3f} ms")
+        print(f"  fwd+bwd  : {round(mean_fwd + mean_bwd, 3):8.3f} ms  (compute)")
+
     os.makedirs(RESULTS_DIR, exist_ok=True)
     timer.save_csv(
         os.path.join(RESULTS_DIR, "timing.csv"),
         extra_fields={
-            "dataset":     dataset_name,
-            "model":       model_name,
-            "reordering":  "baseline",
-            "mode":        "full-batch" if use_fullbatch else "mini-batch",
-            "k":           "N/A",
-            "train_acc":   round(acc.get("train", float("nan")), 4),
-            "val_acc":     round(acc.get("valid", float("nan")), 4),
+            "dataset":        dataset_name,
+            "model":          model_name,
+            "reordering":     "baseline",
+            "mode":           "full-batch" if use_fullbatch else "mini-batch",
+            "k":              "N/A",
+            "train_acc":      round(acc.get("train", float("nan")), 4),
+            "val_acc":        round(acc.get("valid", float("nan")), 4),
+            "mean_fwd_ms":    mean_fwd,
+            "mean_bwd_ms":    mean_bwd,
+            "mean_opt_ms":    mean_opt,
         },
     )
 
