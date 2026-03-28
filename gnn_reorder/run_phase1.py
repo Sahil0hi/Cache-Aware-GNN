@@ -58,9 +58,9 @@ DATASET_ROOT = os.path.join(os.path.dirname(__file__), "datasets")
 # Datasets where full-batch is safe (node count roughly ≤ 500K on 80GB GPU)
 FULLBATCH_DATASETS = {"ogbn-arxiv"}
 
-# Neighbor sample sizes per GNN layer (hop-2 model → 2 entries)
-NEIGHBOR_SIZES = [15, 10]
-BATCH_SIZE     = 1024
+# Defaults (overridden by CLI args; not used as globals after main() starts)
+DEFAULT_NEIGHBOR_SIZES = [15, 10]
+DEFAULT_BATCH_SIZE     = 1024
 
 
 # ---------------------------------------------------------------------------
@@ -115,15 +115,15 @@ def eval_fullbatch(model, gdata):
 # Mini-batch training  (ogbn-products and any large graph)
 # ---------------------------------------------------------------------------
 
-def make_loaders(data, split_idx, device):
+def make_loaders(data, split_idx, neighbor_sizes, batch_size):
     """
-    Build NeighborLoaders for train / val / test splits.
-    Each loader samples NEIGHBOR_SIZES neighbors per hop.
+    Build NeighborLoaders for train / val splits.
+    Each loader samples `neighbor_sizes` neighbors per hop.
     """
     common = dict(
         data=data,
-        num_neighbors=NEIGHBOR_SIZES,
-        batch_size=BATCH_SIZE,
+        num_neighbors=neighbor_sizes,
+        batch_size=batch_size,
         num_workers=4,
     )
     train_loader = NeighborLoader(
@@ -185,9 +185,13 @@ def run_model(
     in_channels: int,
     num_classes: int,
     n_nodes: int,
+    neighbor_sizes=None,
+    batch_size=DEFAULT_BATCH_SIZE,
 ):
+    if neighbor_sizes is None:
+        neighbor_sizes = DEFAULT_NEIGHBOR_SIZES
     use_fullbatch = dataset_name in FULLBATCH_DATASETS
-    mode_str = "full-batch" if use_fullbatch else f"mini-batch (sizes={NEIGHBOR_SIZES}, bs={BATCH_SIZE})"
+    mode_str = "full-batch" if use_fullbatch else f"mini-batch (sizes={neighbor_sizes}, bs={batch_size})"
 
     print(f"\n{'='*60}")
     print(f" Model: {model_name} | Dataset: {dataset_name}")
@@ -222,7 +226,7 @@ def run_model(
 
     # ---- Mini-batch path (ogbn-products) -----------------------------------
     else:
-        train_loader, val_loader = make_loaders(data, split_idx, device)
+        train_loader, val_loader = make_loaders(data, split_idx, neighbor_sizes, batch_size)
         for epoch in range(1, warmup + epochs + 1):
             timer.start()
             train_minibatch(model, train_loader, optimizer, device)
@@ -275,17 +279,15 @@ def main():
     parser.add_argument("--hidden", type=int, default=256)
     parser.add_argument("--gpu", type=int, default=0,
                         help="CUDA GPU index (default: 0).")
-    parser.add_argument("--batch-size", type=int, default=BATCH_SIZE,
+    parser.add_argument("--batch-size", type=int, default=DEFAULT_BATCH_SIZE,
                         help="Mini-batch size for large graphs.")
     parser.add_argument("--neighbor-sizes", type=int, nargs="+",
-                        default=NEIGHBOR_SIZES,
+                        default=DEFAULT_NEIGHBOR_SIZES,
                         help="Neighbors sampled per hop (mini-batch only).")
     args = parser.parse_args()
 
-    # Propagate CLI overrides to globals
-    global BATCH_SIZE, NEIGHBOR_SIZES
-    BATCH_SIZE     = args.batch_size
-    NEIGHBOR_SIZES = args.neighbor_sizes
+    batch_size     = args.batch_size
+    neighbor_sizes = args.neighbor_sizes
 
     # ---- Device setup -------------------------------------------------------
     if torch.cuda.is_available():
@@ -324,6 +326,8 @@ def main():
             in_channels=in_channels,
             num_classes=num_classes,
             n_nodes=n_nodes,
+            neighbor_sizes=neighbor_sizes,
+            batch_size=batch_size,
         )
 
     print("\n[main] Phase 1 complete. Results saved to results/timing.csv")
