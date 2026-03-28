@@ -38,42 +38,36 @@ from models.gat import GAT
 from profiling.timer import EpochTimer
 from reordering.rcm import rcm_reorder
 from reordering.metis_reorder import metis_reorder
+from run_phase1 import GPUData  # reuse the same GPU pre-loading class
 
 RESULTS_DIR = os.path.join(os.path.dirname(__file__), "results")
 DATASET_ROOT = os.path.join(os.path.dirname(__file__), "datasets")
 
 
 # ---------------------------------------------------------------------------
-# Shared training/eval (identical to Phase 1 — no data-loader needed here
-# for the full-batch setting on ogbn-arxiv)
+# Training / eval  (data is already on GPU in GPUData — no .to() calls)
 # ---------------------------------------------------------------------------
 
-def train_one_epoch(model, data, optimizer, train_idx, device):
+def train_one_epoch(model, gdata, optimizer):
     model.train()
     optimizer.zero_grad()
-    x = data.x.to(device)
-    edge_index = data.edge_index.to(device)
-    y = data.y.squeeze(1).to(device)
-    out = model(x, edge_index)
-    loss = F.cross_entropy(out[train_idx], y[train_idx])
+    out = model(gdata.x, gdata.edge_index)
+    loss = F.cross_entropy(out[gdata.train_idx], gdata.y[gdata.train_idx])
     loss.backward()
     optimizer.step()
     return loss.item()
 
 
 @torch.no_grad()
-def evaluate(model, data, split_idx, device):
+def evaluate(model, gdata):
     model.eval()
-    x = data.x.to(device)
-    edge_index = data.edge_index.to(device)
-    y = data.y.squeeze(1).to(device)
-    out = model(x, edge_index)
+    out = model(gdata.x, gdata.edge_index)
     pred = out.argmax(dim=-1)
-    results = {}
-    for split, idx in split_idx.items():
-        idx = idx.to(device)
-        results[split] = pred[idx].eq(y[idx]).sum().item() / idx.numel()
-    return results
+    return {
+        "train": pred[gdata.train_idx].eq(gdata.y[gdata.train_idx]).float().mean().item(),
+        "valid": pred[gdata.val_idx  ].eq(gdata.y[gdata.val_idx  ]).float().mean().item(),
+        "test" : pred[gdata.test_idx ].eq(gdata.y[gdata.test_idx ]).float().mean().item(),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -82,22 +76,20 @@ def evaluate(model, data, split_idx, device):
 
 def run_model(
     model_name,
-    data_perm,
-    split_idx,
+    gdata: GPUData,          # data already on GPU
     device,
     warmup,
     epochs,
     dataset_name,
-    reordering_tag,  # e.g. "rcm" or "metis_k8"
+    reordering_tag,
+    in_channels,
+    num_classes,
+    n_nodes,
     run_eval=True,
 ):
-    n = data_perm.num_nodes
-    in_channels = data_perm.x.shape[1]
-    num_classes = int(data_perm.y.max().item()) + 1
-
     print(f"\n{'='*60}")
     print(f" Model: {model_name} | Reordering: {reordering_tag}")
-    print(f" Nodes: {n:,} | Features: {in_channels} | Classes: {num_classes}")
+    print(f" Nodes: {n_nodes:,} | Features: {in_channels} | Classes: {num_classes}")
     print(f"{'='*60}")
 
     if model_name == "GraphSAGE":
@@ -106,24 +98,26 @@ def run_model(
         model = GAT(in_channels, hidden_channels=256, out_channels=num_classes)
 
     model = model.to(device)
+    if device.type == "cuda":
+        mem_gb = torch.cuda.memory_allocated(device) / 1024**3
+        print(f" GPU memory after model load: {mem_gb:.2f} GB")
+
     optimizer = torch.optim.Adam(model.parameters(), lr=0.01, weight_decay=5e-4)
-    train_idx = split_idx["train"].to(device)
 
     timer = EpochTimer(warmup=warmup)
     for epoch in range(1, warmup + epochs + 1):
         timer.start()
-        train_one_epoch(model, data_perm, optimizer, train_idx, device)
+        train_one_epoch(model, gdata, optimizer)   # no .to() inside!
         timer.stop()
 
-    acc = evaluate(model, data_perm, split_idx, device) if run_eval else {}
+    acc = evaluate(model, gdata) if run_eval else {}
     if acc:
         print(f"\n[{model_name}] Accuracy after {reordering_tag}:")
         for split, val in acc.items():
             print(f"  {split:5s}: {100*val:.2f}%")
 
-    summary = timer.summary()
-    print(f"\n[{model_name}] Timing: {summary['mean_ms_per_epoch']:.2f} ± "
-          f"{summary['std_ms_per_epoch']:.2f} ms/epoch")
+    print(f"\n[{model_name}] Timing: {timer.summary()['mean_ms_per_epoch']:.2f} "
+          f"± {timer.summary()['std_ms_per_epoch']:.2f} ms/epoch")
 
     os.makedirs(RESULTS_DIR, exist_ok=True)
     timer.save_csv(
@@ -160,59 +154,67 @@ def main():
                         help="Skip accuracy evaluation (faster for sweeps).")
     parser.add_argument("--no-verify", action="store_true",
                         help="Skip edge-set correctness check.")
+    parser.add_argument("--gpu", type=int, default=0,
+                        help="Which CUDA GPU index to use (default: 0).")
     args = parser.parse_args()
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    # ---- Device setup -------------------------------------------------------
+    if torch.cuda.is_available():
+        device = torch.device(f"cuda:{args.gpu}")
+        torch.cuda.set_device(device)
+        print(f"[main] GPU {args.gpu}: {torch.cuda.get_device_name(args.gpu)}")
+        total_mem = torch.cuda.get_device_properties(args.gpu).total_memory / 1024**3
+        print(f"[main] Total GPU memory: {total_mem:.1f} GB")
+    else:
+        device = torch.device("cpu")
+        print("[main] WARNING: No CUDA GPU found — running on CPU.")
     print(f"[main] Device: {device}")
 
-    # Load dataset
+    # ---- Load dataset (CPU) -------------------------------------------------
     print(f"\n[main] Loading {args.dataset} ...")
     dataset = PygNodePropPredDataset(name=args.dataset, root=DATASET_ROOT)
     data = dataset[0]
     split_idx = dataset.get_idx_split()
 
+    in_channels = data.x.shape[1]
+    num_classes = int(data.y.max().item()) + 1
+    n_nodes     = data.num_nodes
+
     verify = not args.no_verify
 
-    # -------- RCM -----------------------------------------------------------
-    if args.method == "rcm":
-        print("\n[main] Applying RCM reordering ...")
-        data_perm, perm = rcm_reorder(data, verify=verify)
-
+    def _run_config(data_perm, tag):
+        """Move permuted data to GPU once, then train both models."""
+        gdata = GPUData(data_perm, split_idx, device)
         for model_name in args.models:
             run_model(
                 model_name=model_name,
-                data_perm=data_perm,
-                split_idx=split_idx,
+                gdata=gdata,
                 device=device,
                 warmup=args.warmup,
                 epochs=args.epochs,
                 dataset_name=args.dataset,
-                reordering_tag="rcm",
+                reordering_tag=tag,
+                in_channels=in_channels,
+                num_classes=num_classes,
+                n_nodes=n_nodes,
                 run_eval=not args.no_eval,
             )
 
-    # -------- METIS (one or several k values) --------------------------------
+    # -------- RCM ------------------------------------------------------------
+    if args.method == "rcm":
+        print("\n[main] Applying RCM reordering (CPU) ...")
+        data_perm, perm = rcm_reorder(data, verify=verify)
+        _run_config(data_perm, "rcm")
+
+    # -------- METIS ----------------------------------------------------------
     elif args.method == "metis":
         for k in args.k:
-            print(f"\n[main] Applying METIS reordering (k={k}) ...")
+            print(f"\n[main] Applying METIS reordering (k={k}) on CPU ...")
             data_perm, perm, _ = metis_reorder(data, k=k, verify=verify)
-
-            for model_name in args.models:
-                run_model(
-                    model_name=model_name,
-                    data_perm=data_perm,
-                    split_idx=split_idx,
-                    device=device,
-                    warmup=args.warmup,
-                    epochs=args.epochs,
-                    dataset_name=args.dataset,
-                    reordering_tag=f"metis_k{k}",
-                    run_eval=not args.no_eval,
-                )
+            _run_config(data_perm, f"metis_k{k}")
 
     print("\n[main] Phase 2 complete. Results appended to results/timing.csv")
-    print("[main] To compare with baseline, run:")
-    print("         python compare_results.py")
+    print("[main] Run  python compare_results.py  to see the ablation table.")
 
 
 if __name__ == "__main__":
