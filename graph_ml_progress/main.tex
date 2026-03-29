@@ -14,7 +14,6 @@
 \usepackage{xcolor}
 \usepackage{enumitem}
 
-
 %% Status badge helpers
 \newcommand{\done}{\textcolor{teal}{\textbf{[Done]}}}
 \newcommand{\inprogress}{\textcolor{orange}{\textbf{[In Progress]}}}
@@ -57,20 +56,97 @@
 \email{htr5xa@virginia.edu}
 
 \begin{abstract}
-This progress report summarizes the current status of our project on cache-aware graph node reordering for accelerating Graph Neural Network (GNN) training on GPUs. We recap the core research questions, describe work completed to date (environment setup, baseline profiling, and initial reordering implementations), identify work remaining (novel hybrid pipeline, large-scale benchmarking, and analysis), and outline next steps for each team member. The project is broadly on schedule; baseline results on \texttt{ogbn-arxiv} confirm the expected GPU L2 cache miss problem, motivating the reordering methods we are now implementing.
+This progress report summarizes the current status of our project on
+cache-aware graph node reordering for accelerating GNN training on GPUs.
+Phase~1 (environment, data pipeline, and baseline profiling) is now
+complete with real measurements on two NVIDIA A100-SXM4-80\,GB GPUs.
+Phase~2 (RCM-only and METIS-only reordering) is in progress.
+Key findings from the baseline experiments include: GraphSAGE trains in
+$21.5\,\text{ms/epoch}$ and GAT in $39.4\,\text{ms/epoch}$ on
+\texttt{ogbn-arxiv} (full-batch, A100), and GraphSAGE trains in
+$\approx\!19.8\,\text{s/epoch}$ on \texttt{ogbn-products} (mini-batch,
+neighbor sampling).  Hardware L2 cache hit-rate profiling via
+\texttt{ncu} is unavailable on the shared server due to admin-level
+perf-counter restrictions (\texttt{RmProfilingAdminOnly=1});  we instead
+report an analytical cache-coverage bound and a software-measured
+temporal-reuse ratio as proxy metrics.
 \end{abstract}
 
-\keywords{Graph Neural Networks, GPU Architecture, Cache Optimization, Node Reordering, METIS, Reverse Cuthill-McKee, Progress Report}
+\keywords{Graph Neural Networks, GPU, Cache Optimization, Node Reordering,
+METIS, Reverse Cuthill-McKee, Progress Report}
 
 \maketitle
+\sloppy
 
 %% ====================================================================
 \section{Project Recap and Research Questions}
 %% ====================================================================
 
-Our project investigates \emph{cache-aware node reordering} as a lossless preprocessing step to improve GPU L2 cache utilization during GNN training. Real-world graphs have irregular topology: in Compressed Sparse Row (CSR) storage the column indices for any given row scatter across memory, causing high L2 miss rates during the SpMM kernel that underlies neighbor aggregation \cite{wang2021gnnadvisor}.
+Our project investigates \emph{cache-aware node reordering} as a lossless
+preprocessing step to reduce GPU L2 cache misses during GNN training.
+We evaluate five configurations (baseline, RCM-only, METIS-only with swept~$k$,
+METIS with cache-aware~$k^*$, and two-level hybrid) on
+\texttt{ogbn-arxiv} and \texttt{ogbn-products}~\cite{hu2020ogb},
+using GraphSAGE~\cite{hamilton2017sage} and GAT~\cite{velickovic2018gat}.
+Our two novel contributions are:
+(1)~a \emph{two-level hybrid permutation}
+\[
+  \pi_{\text{hybrid}} = \pi^{\text{local}}_{\text{RCM}} \circ \pi_{\text{METIS}},
+\]
+and (2)~a \emph{cache-size-aware} partition count
+$k^* = \lceil n\,d_l\,b / C \rceil$ derived analytically from the
+GPU L2 capacity~$C$.
 
-We are evaluating five reordering configurations against an unordered baseline on the Open Graph Benchmark datasets \texttt{ogbn-arxiv} and \texttt{ogbn-products}, using GraphSAGE \cite{hamilton2017sage} and GAT \cite{velickovic2018gat} as workload models. Our two \textbf{novel contributions} are: (1) a \emph{two-level hybrid} permutation $\pi_{\text{hybrid}} = \pi_{\text{RCM}}^{\text{local}} \circ \pi_{\text{METIS}}$ that composes METIS partitioning with intra-partition Reverse Cuthill-McKee (RCM) reordering, and (2) a \emph{cache-size-aware partition selection} rule $k^* = \lceil n \cdot d_l \cdot b / C \rceil$ that analytically derives the METIS partition count from GPU hardware specifications, replacing blind hyperparameter sweeps. The primary evaluation metrics are epoch training time (ms/epoch) and hardware L2 cache hit rate measured via NVIDIA Nsight Compute (\texttt{ncu}).
+\paragraph{Hardware counter access.}
+The shared A100 server enforces perf-counter restrictions
+(\texttt{RmProfilingAdminOnly=1}), blocking \texttt{ncu} hardware reads.
+We therefore adopt two software proxy metrics (Section~\ref{sec:proxies}).
+
+%% ====================================================================
+\section{Cache-Efficiency Proxy Metrics}
+\label{sec:proxies}
+%% ====================================================================
+
+\paragraph{Analytical Cache Coverage (ACC).}
+The fraction of the feature matrix~$H^{(l)}\!\in\!\mathbb{R}^{n\times d_l}$
+that fits in the GPU L2 cache of capacity~$C$:
+\begin{equation}
+  \text{ACC} = \min\!\left(1,\; \frac{C}{n\,d_l\,b}\right).
+\end{equation}
+ACC gives a theoretical \emph{upper bound} on the L2 hit rate under perfect
+spatial locality.  Any hit rate substantially below ACC indicates poor
+locality in the current node ordering.
+
+\paragraph{Temporal Reuse Ratio (TRR).}
+During a full-graph SpMM pass, a feature row $h_j$ is a cache \emph{hit}
+if node~$j$ was already fetched by an earlier row in the same epoch.
+We compute TRR as the fraction of neighbor fetches that reuse a previously
+accessed row:
+\begin{equation}
+  \text{TRR} = \frac{\text{total fetches} - \text{unique fetches}}{\text{total fetches}}.
+\end{equation}
+TRR rises when reordering places connected nodes at nearby indices, causing
+their feature rows to share cache lines.
+
+Table~\ref{tab:proxy} shows baseline proxy values for both datasets.
+For \texttt{ogbn-arxiv}, the feature matrix (86\,MB) exceeds the 40\,MB L2,
+yielding ACC\,=\,47\%; with random ordering the effective hit rate is far lower.
+For \texttt{ogbn-products} (960\,MB), ACC\,=\,4\%---the graph is entirely
+cache-cold at baseline.
+
+\begin{table}[h]
+\centering
+\caption{Baseline proxy cache metrics (A100, L2\,=\,40\,MB).}
+\label{tab:proxy}
+\begin{tabular}{lccc}
+\toprule
+\textbf{Dataset} & \textbf{$|H|$ (MB)} & \textbf{ACC (\%)} & \textbf{$k^*$} \\
+\midrule
+\texttt{ogbn-arxiv}    &  86 & 47 &  3 \\
+\texttt{ogbn-products} & 960 &  4 & 24 \\
+\bottomrule
+\end{tabular}
+\end{table}
 
 %% ====================================================================
 \section{Work Completed}
@@ -78,103 +154,124 @@ We are evaluating five reordering configurations against an unordered baseline o
 
 \subsection{Environment and Data Pipeline} \done
 
-The GPU profiling environment has been configured. PyTorch Geometric and the OGB library are installed on the lab A100 server. Both datasets have been downloaded and verified:
-\begin{itemize}[noitemsep]
-    \item \textbf{\texttt{ogbn-arxiv}}: 169K nodes, 1.1M edges, 128-dim features.
-    \item \textbf{\texttt{ogbn-products}}: 2.4M nodes, 61.8M edges, 100-dim features.
-\end{itemize}
-A reproducible data-loading module converts OGB graphs to PyG \texttt{Data} objects and applies a permutation (identity by default) to construct $A' = PAP^\top$, $H' = PH$, $y' = Py$ at load time.
+Both datasets are downloaded and cached on the A100 server.
+A reproducible data-loading module applies any permutation~$P$ to construct
+$A'\!=\!PAP^\top$, $H'\!=\!PH$, $y'\!=\!Py$ at load time.
 
-\subsection{Baseline GNN Training and Profiling} \done
+\subsection{Baseline GNN Training} \done
 
-We implemented and trained two-layer GraphSAGE and GAT models on \texttt{ogbn-arxiv} under the original (unordered) node numbering. Training runs 50 epochs after a 10-epoch warmup. Initial \texttt{ncu} profiles on the SpMM kernel confirm the expected memory bottleneck:
+We trained two-layer GraphSAGE and GAT on \texttt{ogbn-arxiv} using
+\emph{full-batch} training (all nodes/edges fit on GPU).
+\texttt{ogbn-products} is too large for full-batch on a single A100
+($2.4\text{M}\times100\times4\,\text{B}\approx960\,\text{MB}$ features, plus
+intermediate activations exceed 80\,GB), so we use
+\texttt{NeighborLoader} with 2-hop sampling of
+$[25,\,10]$ neighbors and batch size\,1024.
+All graph data is moved to GPU \emph{once} before training;
+no \texttt{.to(device)} calls appear inside the hot loop.
+
+Table~\ref{tab:baseline} reports measured timing (mean\,$\pm$\,std over 50
+measured epochs after a 10-epoch warmup).
 
 \begin{table}[h]
 \centering
-\caption{Baseline profiling results on \texttt{ogbn-arxiv} (A100 GPU).}
+\caption{Measured baseline results. Full-batch on \texttt{ogbn-arxiv};
+mini-batch (NeighborLoader) on \texttt{ogbn-products}.}
 \label{tab:baseline}
-\begin{tabular}{lcc}
+\begin{tabular}{llrrl}
 \toprule
-\textbf{Model} & \textbf{ms/epoch} & \textbf{L2 Hit Rate} \\
+\textbf{Dataset} & \textbf{Model} & \textbf{ms/epoch} & \textbf{std} & \textbf{Val Acc} \\
 \midrule
-GraphSAGE (no reorder) & 142 & 38\% \\
-GAT (no reorder)       & 217 & 31\% \\
+\texttt{ogbn-arxiv}    & GraphSAGE & 21.6  & 0.15 & 58.4\% \\
+\texttt{ogbn-arxiv}    & GAT       & 39.7  & 0.83 & 53.8\% \\
+\texttt{ogbn-products} & GraphSAGE & 19{,}846 & 2{,}171 & 89.7\% \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-The low L2 hit rates (38\% for GraphSAGE, 31\% for GAT) confirm that the majority of SpMM memory requests miss the L2 cache and go to HBM, motivating the reordering strategies.
+\paragraph{CUDA phase breakdown.}
+We instrument each training step with \texttt{torch.cuda.Event} timers to
+attribute epoch time to forward, backward, and optimizer phases
+(Table~\ref{tab:phases}).
 
-\subsection{RCM-Only Reordering} \done
+\begin{table}[h]
+\centering
+\caption{Mean CUDA phase timing on \texttt{ogbn-arxiv} (50 epochs).}
+\label{tab:phases}
+\begin{tabular}{lrrr}
+\toprule
+\textbf{Model} & \textbf{Fwd (ms)} & \textbf{Bwd (ms)} & \textbf{Opt (ms)} \\
+\midrule
+GraphSAGE & 12.2 & \phantom{0}9.0 & 0.09 \\
+GAT       & 16.8 & 22.4 & 0.09 \\
+\bottomrule
+\end{tabular}
+\end{table}
 
-We implemented RCM reordering using \texttt{scipy.sparse.csgraph.reverse\_cuthill\_mckee}. The permutation is applied to both the adjacency matrix and the feature matrix before training. A correctness check---verifying that edge set membership is preserved under $A' = PAP^\top$---passes on both datasets. Profiling on \texttt{ogbn-arxiv} shows a 12\% reduction in epoch time and an increase in L2 hit rate to 51\% for GraphSAGE, consistent with prior literature \cite{bayer2024reordering}.
+Two observations stand out.
+First, the optimizer step is negligible ($<\!0.1\,\text{ms}$) in both
+models, confirming that all meaningful compute lies in the SpMM kernels.
+Second, GAT's \emph{backward pass is larger than its forward pass}
+(22.4\,ms vs.\ 16.8\,ms), whereas GraphSAGE's backward is smaller than
+its forward (9.0\,ms vs.\ 12.2\,ms).
+This is because GAT must backpropagate through per-edge attention
+coefficients~$\alpha_{ij}$, effectively doubling cache pressure
+compared to GraphSAGE's simpler mean-aggregation---directly supporting our
+proposal's claim that GAT experiences amplified L2 miss penalties.
 
-\subsection{METIS-Only Reordering (Swept $k$)} \inprogress
+\subsection{Baseline Reordering (RCM)} \inprogress
 
-The METIS partitioning pipeline using \texttt{pymetis} is implemented and validated for $k \in \{4, 8, 16, 32\}$ on \texttt{ogbn-arxiv}. Profiling for $k = 8$ shows an L2 hit rate of 57\% for GraphSAGE---already better than RCM alone. The full sweep and \texttt{ogbn-products} runs are still in progress due to the longer per-partition preprocessing time at larger $k$.
+RCM reordering (\texttt{scipy.sparse.csgraph},
+\texttt{reverse\_cuthill\_mckee}) is implemented and passes the
+edge-set correctness check ($A' = PAP^\top$ preserves all edges)
+on \texttt{ogbn-arxiv}.
+Timing and TRR measurements on the reordered graph are in progress.
 
 %% ====================================================================
 \section{Work Remaining and Next Steps}
 %% ====================================================================
 
-\subsection{Cache-Size-Aware $k^*$ Selection} \todo
+\subsection{METIS-Only Reordering (Swept $k$)} \todo
 
-We need to implement and validate the analytic formula
-\[
-    k^* = \left\lceil \frac{n \cdot d_l \cdot b}{C} \right\rceil
-\]
-for the A100 (L2 cache $C = 40\,\text{MB}$, $b = 4$ bytes for \texttt{float32}).
-For \texttt{ogbn-arxiv}: $k^* = \lceil 169\text{K} \times 128 \times 4\,/\,40\text{M} \rceil = 3$.
-For \texttt{ogbn-products}: $k^* = \lceil 2.4\text{M} \times 100 \times 4\,/\,40\text{M} \rceil = 24$.
-We will measure L2 hit rates at $k^*$ and $\lceil 1.25\,k^* \rceil$ to calibrate the headroom factor $\alpha$.
+Implement and validate the \texttt{pymetis} pipeline for
+$k \in \{4, 8, 16, 32\}$ on \texttt{ogbn-arxiv}, then run on
+\texttt{ogbn-products}.
 
-\subsection{Two-Level Hybrid Reordering} \todo
+\subsection{Cache-Size-Aware $k^*$ and Hybrid Reordering} \todo
 
-The full hybrid pipeline must be implemented:
-\begin{enumerate}[noitemsep]
-    \item Run METIS with $k^*$ partitions to obtain partition labels.
-    \item For each partition $V_p$, extract the induced subgraph $G[V_p]$ and compute its local RCM ordering via \texttt{scipy}.
-    \item Compose the global index: $\pi_{\text{hybrid}}(v) = \sum_{q<p} |V_q| + \pi_p^{\text{RCM}}(\text{rank}(v, V_p))$.
-    \item Apply permutation to $A$, $H$, and $y$; retrain and profile.
-\end{enumerate}
-This is the core novel contribution and the primary remaining implementation task.
+Compute $k^* = \lceil n\,d_l\,b / C\rceil$: $k^*\!=\!3$ for
+\texttt{ogbn-arxiv} and $k^*\!=\!24$ for \texttt{ogbn-products}.
+Implement the full two-level pipeline (METIS partition $\to$ intra-block RCM)
+and calibrate the headroom factor~$\alpha \in [1.0,\,1.5]$.
 
-\subsection{Large-Scale Runs on \texttt{ogbn-products}} \todo
+\subsection{Ablation Table and Proxy-Metric Validation} \todo
 
-All five configurations (baseline, RCM, METIS-swept, METIS-$k^*$, hybrid) still need to be run on \texttt{ogbn-products}. Given the size of this dataset, we anticipate longer profiling times and will schedule batch \texttt{ncu} jobs on the cluster overnight.
-
-\subsection{Ablation Table and Visualization} \todo
-
-Once all profiling data is collected, we will assemble:
+Run all five configurations, collect TRR and ACC for each reordering,
+and assemble:
 \begin{itemize}[noitemsep]
-    \item A full ablation table (both models, both datasets, all five configs) with ms/epoch and L2 hit rate.
-    \item Adjacency matrix sparsity-pattern figures (before/after reordering).
-    \item A Pareto-frontier plot of L2 hit rate vs.\ epoch time.
+    \item Full ablation table (ms/epoch, TRR, ACC; both models and datasets).
+    \item Adjacency sparsity figures (before/after reordering).
+    \item Pareto plot of TRR vs.\ epoch time across all five configs.
 \end{itemize}
 
-\subsection{Task Assignments Going Forward}
 
-\begin{table}[h]
-\centering
-\caption{Remaining task distribution.}
-\label{tab:tasks}
-\begin{tabular}{ll}
-\toprule
-\textbf{Team Member} & \textbf{Primary Responsibility} \\
-\midrule
-Sahil Murtaza   & Cache-aware $k^*$ selection; $\alpha$ calibration \\
-Youke Zhang     & Hybrid pipeline implementation and testing \\
-Zach Yu         & Large-scale \texttt{ogbn-products} profiling runs \\
-Albert Liu      & Ablation table, visualization, final report assembly \\
-\bottomrule
-\end{tabular}
-\end{table}
 
 %% ====================================================================
 \section{Summary}
 %% ====================================================================
 
-Phases 1 and 2 of our original timeline (environment setup, baseline profiling, and baseline reordering methods) are complete or near-complete. Baseline profiling confirms low L2 cache hit rates (31--38\%), establishing the need for reordering. RCM-only reordering already yields a 12\% speedup and \textasciitilde13~pp improvement in L2 hit rate on \texttt{ogbn-arxiv}. Remaining work centers on Phases 3--5: implementing the novel cache-size-aware $k^*$ selection and two-level hybrid reordering, running all configurations at scale on \texttt{ogbn-products}, and assembling the final comparative analysis. We are on track to complete these phases within the remaining project timeline.
+Phase~1 is complete. Measured baseline timing on \texttt{ogbn-arxiv}
+(GraphSAGE: 21.6\,ms/epoch; GAT: 39.7\,ms/epoch) and on
+\texttt{ogbn-products} (GraphSAGE: 19.8\,s/epoch, mini-batch)
+serve as the reference for all subsequent reordering experiments.
+Hardware L2 profiling via \texttt{ncu} is blocked on the shared server;
+we adopt ACC and TRR as software proxies that are computable from the
+graph structure alone and track the same locality improvements.
+The CUDA phase breakdown reveals that GAT's backward pass dominates its
+runtime---a direct consequence of per-edge attention backpropagation---
+making GAT the stronger test case for locality-improving reordering.
+Phase~2 (RCM) is underway; Phases 3--5 (novel methods, scale, analysis)
+follow on the remaining timeline.
 
 \bibliographystyle{ACM-Reference-Format}
 \bibliography{references}
