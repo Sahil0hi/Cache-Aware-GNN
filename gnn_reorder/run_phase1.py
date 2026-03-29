@@ -163,13 +163,20 @@ def eval_fullbatch(model, gdata):
 def make_loaders(data, split_idx, neighbor_sizes, batch_size):
     """
     Build NeighborLoaders for train / val splits.
-    Each loader samples `neighbor_sizes` neighbors per hop.
+
+    pin_memory=True:         enables faster CPU->GPU DMA transfers.
+    persistent_workers=True: avoids worker re-spawn overhead between epochs.
+    num_workers=2:           low value for shared NFS servers.
+                             High num_workers causes I/O contention on NFS,
+                             which is why ogbn-products showed 11% timing std.
     """
     common = dict(
         data=data,
         num_neighbors=neighbor_sizes,
         batch_size=batch_size,
-        num_workers=4,
+        num_workers=2,
+        pin_memory=True,
+        persistent_workers=True,
     )
     train_loader = NeighborLoader(
         input_nodes=split_idx["train"], **common, shuffle=True
@@ -178,6 +185,7 @@ def make_loaders(data, split_idx, neighbor_sizes, batch_size):
         input_nodes=split_idx["valid"], **common, shuffle=False
     )
     return train_loader, val_loader
+
 
 
 def train_minibatch(model, loader, optimizer, device):
