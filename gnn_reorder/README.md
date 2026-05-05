@@ -72,8 +72,8 @@ python run_phase2.py --dataset ogbn-arxiv --method metis --k 4 8 16 32
 
 Phase 3 implements and evaluates the two project contributions:
 
-1. **Cache-size-aware k\*** — `k* = ⌈α · n·d·b / C⌉`
-2. **Two-level hybrid reordering** — METIS(k\*) then intra-partition RCM
+1. **Cache-size-aware `k*`** — `k* = ⌈α · n·d·b / C⌉`
+2. **Two-level hybrid reordering** — `METIS(k*)` then intra-partition RCM
 
 ```bash
 # Quick run: GraphSAGE, arxiv, default alpha=[1.0, 1.25]

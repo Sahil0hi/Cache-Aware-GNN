@@ -182,11 +182,12 @@ def plot_pareto(rows):
         return
 
     # Filter rows that have both timing and TRR
+    _NAN = float("nan")
     valid = []
     for r in rows:
         try:
-            ms  = float(r.get("mean_ms_per_epoch", "nan"))
-            trr = float(r.get("temporal_reuse_ratio", "nan"))
+            ms  = float(r["mean_ms_per_epoch"]) if r.get("mean_ms_per_epoch") else _NAN
+            trr = float(r["temporal_reuse_ratio"]) if r.get("temporal_reuse_ratio") else _NAN
             if math.isnan(ms) or math.isnan(trr) or ms <= 0:
                 continue
         except (TypeError, ValueError):

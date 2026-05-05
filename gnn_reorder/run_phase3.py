@@ -448,8 +448,11 @@ def main():
                         default=DEFAULT_NEIGHBOR_SIZES)
     parser.add_argument("--alpha", type=float, nargs="+", default=[1.0, 1.25],
                         help="Headroom factor(s) for k* calibration. "
-                             "A value of 1.0 gives the lower-bound k*; "
-                             "values >1.0 add cache headroom for inter-partition spill.")
+                             "A value of 1.0 gives the lower-bound k* "
+                             "(zero edge-cut assumption). Values >1.0 add "
+                             "extra cache capacity for cross-partition edges "
+                             "whose neighbor features fall outside the current "
+                             "partition's cache block.")
     parser.add_argument("--sweep-k", type=int, nargs="+", default=[],
                         help="Additional METIS k values to sweep (optional).")
     parser.add_argument("--no-baseline", action="store_true",

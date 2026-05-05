@@ -58,9 +58,10 @@ def plot_adjacency_density(
     src = data.edge_index[0].numpy()
     dst = data.edge_index[1].numpy()
 
-    # Bin node indices into [0, grid_size)
-    bin_src = (src.astype(np.int64) * grid_size // n).clip(0, grid_size - 1)
-    bin_dst = (dst.astype(np.int64) * grid_size // n).clip(0, grid_size - 1)
+    # Bin node indices into [0, grid_size) using float arithmetic to avoid
+    # integer overflow on graphs where n * grid_size could exceed int32 range.
+    bin_src = (src * (grid_size / n)).astype(np.int64).clip(0, grid_size - 1)
+    bin_dst = (dst * (grid_size / n)).astype(np.int64).clip(0, grid_size - 1)
 
     grid = np.zeros((grid_size, grid_size), dtype=np.float32)
     np.add.at(grid, (bin_src, bin_dst), 1.0)
@@ -115,8 +116,8 @@ def plot_before_after(
     def _density_grid(data):
         src = data.edge_index[0].numpy()
         dst = data.edge_index[1].numpy()
-        bin_src = (src.astype(np.int64) * grid_size // n).clip(0, grid_size - 1)
-        bin_dst = (dst.astype(np.int64) * grid_size // n).clip(0, grid_size - 1)
+        bin_src = (src * (grid_size / n)).astype(np.int64).clip(0, grid_size - 1)
+        bin_dst = (dst * (grid_size / n)).astype(np.int64).clip(0, grid_size - 1)
         grid = np.zeros((grid_size, grid_size), dtype=np.float32)
         np.add.at(grid, (bin_src, bin_dst), 1.0)
         return np.log1p(grid)
