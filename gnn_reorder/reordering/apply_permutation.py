@@ -126,7 +126,7 @@ def permutation_from_ordering(ordering: np.ndarray, n: int) -> torch.Tensor:
     which return the list of original node indices in the desired new order.
     i.e. ordering[0] = the original node that should become node 0.
     """
-    perm = torch.zeros(n, dtype=torch.long)
-    for new_idx, old_idx in enumerate(ordering):
-        perm[old_idx] = new_idx
+    ordering_t = torch.from_numpy(np.asarray(ordering, dtype=np.int64))
+    perm = torch.empty(n, dtype=torch.long)
+    perm[ordering_t] = torch.arange(n, dtype=torch.long)
     return perm
