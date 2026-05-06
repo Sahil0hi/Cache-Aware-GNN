@@ -1,0 +1,1339 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Cache-Aware Graph Reordering for GNN Acceleration</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link
+        href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap"
+        rel="stylesheet" />
+    <style>
+        /* ───────────────────────────── RESET & TOKENS ───────────────────────────── */
+        *,
+        *::before,
+        *::after {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        :root {
+            --bg: #ffffff;
+            --bg2: #f8fafc;
+            --bg3: #f1f5f9;
+            --surface: #ffffff;
+            --border: #e2e8f0;
+            --accent: #2563eb;
+            --accent2: #7c3aed;
+            --accent3: #0891b2;
+            --green: #059669;
+            --orange: #d97706;
+            --red: #dc2626;
+            --text: #0f172a;
+            --muted: #64748b;
+            --slide-w: 1280px;
+            --slide-h: 720px;
+        }
+
+        html,
+        body {
+            width: 100%;
+            height: 100%;
+            background: #e2e8f0;
+            font-family: 'Inter', sans-serif;
+            color: var(--text);
+            overflow: hidden;
+        }
+
+        /* ───────────────────────────── DECK WRAPPER ───────────────────────────── */
+        #deck {
+            position: fixed;
+            inset: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        /* ───────────────────────────── SLIDE VIEWPORT ───────────────────────────── */
+        #viewport {
+            width: var(--slide-w);
+            height: var(--slide-h);
+            position: relative;
+            transform-origin: center center;
+            box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.15);
+            border-radius: 16px;
+        }
+
+        /* ───────────────────────────── SLIDES ───────────────────────────── */
+        .slide {
+            position: absolute;
+            inset: 0;
+            background: var(--bg);
+            border-radius: 16px;
+            overflow: hidden;
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity 0.5s ease, transform 0.5s ease;
+            transform: translateX(60px);
+            display: flex;
+            flex-direction: column;
+        }
+
+        .slide.active {
+            opacity: 1;
+            pointer-events: auto;
+            transform: translateX(0);
+        }
+
+        .slide.exit {
+            opacity: 0;
+            transform: translateX(-60px);
+        }
+
+        /* ───────────────────────────── TOPBAR ───────────────────────────── */
+        .topbar {
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 4px;
+            background: linear-gradient(90deg, var(--accent), var(--accent2), var(--accent3));
+        }
+
+        /* ───────────────────────────── SLIDE LABEL ───────────────────────────── */
+        .slide-label {
+            position: absolute;
+            top: 20px;
+            right: 28px;
+            font-size: 11px;
+            font-weight: 600;
+            letter-spacing: 2px;
+            text-transform: uppercase;
+            color: var(--muted);
+        }
+
+        /* ───────────────────────────── COMMON LAYOUT ───────────────────────────── */
+        .slide-inner {
+            padding: 52px 68px 40px;
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+        }
+
+        h1.hero {
+            font-size: 46px;
+            font-weight: 800;
+            line-height: 1.15;
+            color: var(--text);
+        }
+
+        h2.section-title {
+            font-size: 13px;
+            font-weight: 700;
+            letter-spacing: 3px;
+            text-transform: uppercase;
+            color: var(--accent);
+            margin-bottom: 14px;
+        }
+
+        h3.slide-title {
+            font-size: 32px;
+            font-weight: 700;
+            line-height: 1.2;
+            margin-bottom: 28px;
+            color: var(--text);
+        }
+
+        p {
+            font-size: 17px;
+            line-height: 1.65;
+            color: #475569;
+        }
+
+        .grad-text {
+            background: linear-gradient(135deg, var(--accent), var(--accent2));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        /* ───────────────────────────── PILL / TAG ───────────────────────────── */
+        .pill {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 5px 14px;
+            border-radius: 99px;
+            font-size: 13px;
+            font-weight: 600;
+            border: 1px solid transparent;
+        }
+
+        .pill-blue {
+            background: rgba(37, 99, 235, .1);
+            color: #1d4ed8;
+            border-color: rgba(37, 99, 235, .2);
+        }
+
+        .pill-purple {
+            background: rgba(124, 58, 237, .1);
+            color: #6d28d9;
+            border-color: rgba(124, 58, 237, .2);
+        }
+
+        .pill-cyan {
+            background: rgba(8, 145, 178, .1);
+            color: #0e7490;
+            border-color: rgba(8, 145, 178, .2);
+        }
+
+        .pill-green {
+            background: rgba(5, 150, 105, .1);
+            color: #047857;
+            border-color: rgba(5, 150, 105, .2);
+        }
+
+        .pill-orange {
+            background: rgba(217, 119, 6, .1);
+            color: #b45309;
+            border-color: rgba(217, 119, 6, .2);
+        }
+
+        /* ───────────────────────────── CARDS ───────────────────────────── */
+        .card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 22px 26px;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+        }
+
+        .card-grid {
+            display: grid;
+            gap: 16px;
+        }
+
+        .card-grid-2 {
+            grid-template-columns: 1fr 1fr;
+        }
+
+        .card-grid-3 {
+            grid-template-columns: 1fr 1fr 1fr;
+        }
+
+        .card h4 {
+            font-size: 15px;
+            font-weight: 700;
+            margin-bottom: 8px;
+            color: #0f172a;
+        }
+
+        .card p {
+            font-size: 14px;
+            line-height: 1.6;
+            color: #475569;
+        }
+
+        /* ───────────────────────────── CODE ───────────────────────────── */
+        .mono {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 13px;
+            background: rgba(0, 0, 0, .05);
+            padding: 2px 7px;
+            border-radius: 5px;
+            color: #0369a1;
+        }
+
+        /* ───────────────────────────── EQUATION BOX ───────────────────────────── */
+        .eq-box {
+            background: rgba(37, 99, 235, .05);
+            border: 1px solid rgba(37, 99, 235, .2);
+            border-radius: 10px;
+            padding: 16px 24px;
+            text-align: center;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 18px;
+            color: #1d4ed8;
+            margin: 10px 0;
+        }
+
+        /* ───────────────────────────── TABLE ───────────────────────────── */
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 14px;
+        }
+
+        th {
+            background: rgba(37, 99, 235, .08);
+            color: #1e3a8a;
+            font-weight: 700;
+            padding: 10px 14px;
+            text-align: left;
+            font-size: 13px;
+            letter-spacing: .5px;
+        }
+
+        td {
+            padding: 9px 14px;
+            border-top: 1px solid var(--border);
+            color: #334155;
+        }
+
+        tr:hover td {
+            background: rgba(0, 0, 0, .02);
+        }
+
+        .val-highlight {
+            color: #059669;
+            font-weight: 700;
+            font-family: 'JetBrains Mono', monospace;
+        }
+
+        /* ───────────────────────────── STATUS BADGES ───────────────────────────── */
+        .badge {
+            display: inline-block;
+            padding: 2px 10px;
+            border-radius: 99px;
+            font-size: 12px;
+            font-weight: 700;
+        }
+
+        .badge-done {
+            background: rgba(5, 150, 105, .15);
+            color: #047857;
+        }
+
+        .badge-ip {
+            background: rgba(217, 119, 6, .15);
+            color: #b45309;
+        }
+
+        .badge-todo {
+            background: rgba(220, 38, 38, .15);
+            color: #b91c1c;
+        }
+
+        /* ───────────────────────────── TIMELINE ───────────────────────────── */
+        .timeline {
+            display: flex;
+            flex-direction: column;
+            gap: 0;
+        }
+
+        .tl-item {
+            display: flex;
+            gap: 16px;
+            padding: 14px 0;
+            position: relative;
+        }
+
+        .tl-item:not(:last-child)::after {
+            content: '';
+            position: absolute;
+            left: 15px;
+            top: 38px;
+            bottom: -14px;
+            width: 2px;
+            background: var(--border);
+        }
+
+        .tl-dot {
+            width: 30px;
+            height: 30px;
+            border-radius: 50%;
+            flex-shrink: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 13px;
+            font-weight: 700;
+        }
+
+        .tl-done {
+            background: rgba(5, 150, 105, .1);
+            border: 2px solid #059669;
+            color: #047857;
+        }
+
+        .tl-ip {
+            background: rgba(217, 119, 6, .1);
+            border: 2px solid #d97706;
+            color: #b45309;
+        }
+
+        .tl-todo {
+            background: rgba(100, 116, 139, .1);
+            border: 2px solid #64748b;
+            color: #475569;
+        }
+
+        .tl-body {
+            flex: 1;
+            padding-top: 4px;
+        }
+
+        .tl-body h4 {
+            font-size: 15px;
+            font-weight: 600;
+            color: #0f172a;
+            margin-bottom: 3px;
+        }
+
+        .tl-body p {
+            font-size: 13px;
+            color: #475569;
+            line-height: 1.5;
+        }
+
+        /* ───────────────────────────── DIVIDER ───────────────────────────── */
+        .divider {
+            height: 1px;
+            background: var(--border);
+            margin: 22px 0;
+        }
+
+        /* ───────────────────────────── HIGHLIGHT ROW ───────────────────────────── */
+        .highlight-row {
+            display: flex;
+            gap: 14px;
+            align-items: stretch;
+        }
+
+        .hl-stat {
+            flex: 1;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            padding: 16px 20px;
+            text-align: center;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+        }
+
+        .hl-stat .num {
+            font-size: 28px;
+            font-weight: 800;
+            margin-bottom: 4px;
+        }
+
+        .hl-stat .lbl {
+            font-size: 12px;
+            color: var(--muted);
+            font-weight: 600;
+            letter-spacing: .5px;
+            text-transform: uppercase;
+        }
+
+        /* ───────────────────────────── FLOW DIAGRAM ───────────────────────────── */
+        .flow {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            flex-wrap: nowrap;
+        }
+
+        .flow-box {
+            flex: 1;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            padding: 14px 12px;
+            text-align: center;
+            min-width: 0;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+        }
+
+        .flow-arrow {
+            color: var(--muted);
+            font-size: 22px;
+            flex-shrink: 0;
+        }
+
+        .flow-box .fb-label {
+            font-size: 12px;
+            font-weight: 700;
+            letter-spacing: 1px;
+            text-transform: uppercase;
+            color: var(--muted);
+            margin-bottom: 6px;
+        }
+
+        .flow-box .fb-val {
+            font-size: 14px;
+            font-weight: 600;
+            color: var(--text);
+        }
+
+        /* ───────────────────────────── COVER SLIDE DECORATIONS ───────────────────────────── */
+        .bg-glow {
+            position: absolute;
+            border-radius: 50%;
+            filter: blur(90px);
+            pointer-events: none;
+            z-index: 0;
+        }
+
+        .glow-blue {
+            width: 500px;
+            height: 500px;
+            background: rgba(37, 99, 235, .1);
+            top: -120px;
+            right: -60px;
+        }
+
+        .glow-purple {
+            width: 400px;
+            height: 400px;
+            background: rgba(124, 58, 237, .1);
+            bottom: -80px;
+            left: 20px;
+        }
+
+        /* ───────────────────────────── GRAPH SPARSITY VISUAL ───────────────────────────── */
+        .matrix-vis {
+            display: flex;
+            gap: 20px;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .matrix-canvas {
+            width: 160px;
+            height: 160px;
+            border-radius: 8px;
+            position: relative;
+            overflow: hidden;
+            border: 1px solid var(--border);
+            background: var(--bg2);
+        }
+
+        .matrix-canvas canvas {
+            display: block;
+        }
+
+        .matrix-label {
+            text-align: center;
+            font-size: 13px;
+            color: var(--muted);
+            margin-top: 8px;
+            font-weight: 600;
+        }
+
+        .arrow-big {
+            font-size: 40px;
+            color: var(--accent);
+        }
+
+        /* ───────────────────────────── NAV CONTROLS ───────────────────────────── */
+        #nav {
+            position: fixed;
+            bottom: 24px;
+            left: 50%;
+            transform: translateX(-50%);
+            display: flex;
+            align-items: center;
+            gap: 14px;
+            background: rgba(255, 255, 255, .9);
+            backdrop-filter: blur(12px);
+            border: 1px solid var(--border);
+            border-radius: 99px;
+            padding: 10px 20px;
+            z-index: 999;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+        }
+
+        #nav button {
+            background: none;
+            border: none;
+            cursor: pointer;
+            color: var(--text);
+            font-size: 20px;
+            padding: 4px 8px;
+            border-radius: 6px;
+            transition: background .2s;
+            font-family: inherit;
+        }
+
+        #nav button:hover {
+            background: rgba(0, 0, 0, .05);
+        }
+
+        #slide-counter {
+            font-size: 14px;
+            color: var(--muted);
+            min-width: 60px;
+            text-align: center;
+            font-weight: 600;
+        }
+
+        #progress-bar {
+            position: fixed;
+            bottom: 0;
+            left: 0;
+            height: 3px;
+            background: linear-gradient(90deg, var(--accent), var(--accent2));
+            transition: width .4s ease;
+            z-index: 9999;
+        }
+
+        /* ───────────────────────────── LISTS ───────────────────────────── */
+        ul.blist {
+            list-style: none;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+
+        ul.blist li {
+            display: flex;
+            gap: 10px;
+            align-items: flex-start;
+            font-size: 16px;
+            color: #334155;
+            line-height: 1.55;
+        }
+
+        ul.blist li::before {
+            content: '▸';
+            color: var(--accent);
+            flex-shrink: 0;
+            margin-top: 2px;
+        }
+
+        /* ───────────────────────────── RESPONSIVE SCALE ───────────────────────────── */
+        @media (max-width: 1300px) {
+            #viewport {
+                zoom: 0.85;
+            }
+        }
+    </style>
+</head>
+
+<body>
+
+    <div id="deck">
+        <div id="viewport">
+
+            <div class="slide active" id="s1">
+                <div class="topbar"></div>
+                <div class="bg-glow glow-blue"></div>
+                <div class="bg-glow glow-purple"></div>
+                <div class="slide-inner" style="justify-content:center; position:relative; z-index:1;">
+                    <div style="display:flex; gap:10px; margin-bottom:28px; flex-wrap:wrap;">
+                        <span class="pill pill-blue">CS 6501 · Graph ML</span>
+                        <span class="pill pill-purple">Spring 2026 · UVA</span>
+                    </div>
+                    <h1 class="hero">
+                        Cache-Aware<br />
+                        <span class="grad-text">Graph Reordering</span><br />
+                        for Efficient GNN Training
+                    </h1>
+                    <p style="margin-top:26px; font-size:18px; max-width:640px; color:#475569;">
+                        Accelerating GNN training on GPUs via lossless node permutations that improve L2 cache locality
+                        during sparse message-passing.
+                    </p>
+                    <div class="divider" style="max-width:500px; margin-top:32px;"></div>
+                    <p style="font-size:15px; color:#64748b; margin-top:14px;">
+                        <strong style="color:#0f172a;">Sahil Murtaza &nbsp;·&nbsp; Youke Zhang &nbsp;·&nbsp; Zach Yu
+                            &nbsp;·&nbsp; Albert Liu</strong><br />
+                        University of Virginia
+                    </p>
+                </div>
+                <div class="slide-label">1 / 10</div>
+            </div>
+
+            <div class="slide" id="s2">
+                <div class="topbar"></div>
+                <div class="slide-inner">
+                    <h2 class="section-title">Motivation</h2>
+                    <h3 class="slide-title">GNNs Hit a Memory Wall on GPUs</h3>
+
+                    <div class="card-grid card-grid-3" style="margin-bottom:22px;">
+                        <div class="card" style="border-color:rgba(220,38,38,.25);">
+                            <h4 style="color:#dc2626;">The Bottleneck</h4>
+                            <p>GPUs are optimized for dense (GEMM) workloads. GNNs produce <em>scatter–gather</em>
+                                memory patterns that defeat HBM coalescing.</p>
+                        </div>
+                        <div class="card" style="border-color:rgba(217,119,6,.25);">
+                            <h4 style="color:#d97706;">The Scale Problem</h4>
+                            <p><span class="mono">ogbn-products</span>: 2.4 M nodes, 100-dim features → <strong
+                                    style="color:#d97706;">~960 MB</strong> feature matrix vs. 40 MB L2 cache on A100.
+                            </p>
+                        </div>
+                        <div class="card" style="border-color:rgba(37,99,235,.25);">
+                            <h4 style="color:#2563eb;">Root Cause</h4>
+                            <p>Random node ordering → connected nodes have distant indices → L2 capacity misses on every
+                                neighbor fetch.</p>
+                        </div>
+                    </div>
+
+                    <div class="highlight-row" style="margin-bottom:20px;">
+                        <div class="hl-stat">
+                            <div class="num" style="color:#dc2626;">96%</div>
+                            <div class="lbl">ogbn-products feature matrix is cache-cold at baseline</div>
+                        </div>
+                        <div class="hl-stat">
+                            <div class="num" style="color:#d97706;">53%</div>
+                            <div class="lbl">ogbn-arxiv cache cold (86 MB vs 40 MB L2)</div>
+                        </div>
+                        <div class="hl-stat">
+                            <div class="num" style="color:#2563eb;">SpMM</div>
+                            <div class="lbl">Ã·H is the hot kernel — fix locality here</div>
+                        </div>
+                    </div>
+
+                    <div class="eq-box" style="font-size:15px;">
+                        H<sup>(l+1)</sup> = σ( Ã · H<sup>(l)</sup> · W<sup>(l)</sup> )
+                        &nbsp;→&nbsp; SpMM reads non-contiguous rows of H<sup>(l)</sup>
+                    </div>
+                </div>
+                <div class="slide-label">2 / 10</div>
+            </div>
+
+            <div class="slide" id="s3">
+                <div class="topbar"></div>
+                <div class="slide-inner">
+                    <h2 class="section-title">Core Idea</h2>
+                    <h3 class="slide-title">Node Reordering = Lossless Locality Boost</h3>
+
+                    <div style="display:flex; gap:24px; align-items:stretch; flex:1;">
+                        <div style="flex:1; display:flex; flex-direction:column; gap:14px;">
+                            <div class="card" style="flex:1;">
+                                <h4>The Key Insight</h4>
+                                <p>A permutation π of node indices → reordered adjacency <strong
+                                        style="color:#1d4ed8;">A' = PAP<sup>T</sup></strong>. GNN message-passing is
+                                    <em>equivariant</em> to node relabeling — accuracy is <strong
+                                        style="color:#059669;">guaranteed identical</strong>.</p>
+                            </div>
+                            <div class="card" style="flex:1;">
+                                <h4>Bandwidth Minimization</h4>
+                                <p>We seek π* that minimizes matrix <strong>bandwidth</strong>:<br />
+                                    <span class="mono" style="font-size:12px;">B(A) = max{|π(i) − π(j)|} for
+                                        (i,j)∈E</span><br />
+                                    Smaller bandwidth → neighbors at nearby indices → cache line reuse.
+                                </p>
+                            </div>
+                            <div class="card" style="flex:1;">
+                                <h4>Pre-processing, Not Training Change</h4>
+                                <p>Reordering is a one-time O(|E| log|E|) operation. No changes to model, loss, or
+                                    optimizer.</p>
+                            </div>
+                        </div>
+
+                        <div
+                            style="flex:1; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:12px;">
+                            <p
+                                style="font-size:13px; color:var(--muted); font-weight:600; letter-spacing:1px; text-transform:uppercase;">
+                                Adjacency Matrix Structure</p>
+                            <div class="matrix-vis">
+                                <div>
+                                    <canvas id="matBefore" width="150" height="150" style="border-radius:8px;"></canvas>
+                                    <div class="matrix-label">Random Order</div>
+                                </div>
+                                <div class="arrow-big">→</div>
+                                <div>
+                                    <canvas id="matAfter" width="150" height="150" style="border-radius:8px;"></canvas>
+                                    <div class="matrix-label">After Reordering</div>
+                                </div>
+                            </div>
+                            <p style="font-size:13px; color:var(--muted); text-align:center;">Non-zeros cluster near
+                                diagonal<br />→ contiguous memory accesses</p>
+                        </div>
+                    </div>
+                </div>
+                <div class="slide-label">3 / 10</div>
+            </div>
+
+            <div class="slide" id="s4">
+                <div class="topbar"></div>
+                <div class="slide-inner">
+                    <h2 class="section-title">Baseline Methods</h2>
+                    <h3 class="slide-title">RCM &amp; METIS: Two Classic Approaches</h3>
+
+                    <div style="display:flex; gap:24px; flex:1;">
+                        <div style="flex:1; display:flex; flex-direction:column; gap:14px;">
+                            <div class="pill pill-blue" style="align-self:flex-start;">Reverse Cuthill-McKee (RCM)</div>
+                            <div class="card" style="flex:1;">
+                                <h4>How it works</h4>
+                                <p>BFS-based traversal from a peripheral "seed" node, visiting neighbors in ascending
+                                    degree order, then reversing the sequence. Produces a <strong
+                                        style="color:#2563eb;">band-diagonal</strong> A'.</p>
+                            </div>
+                            <div class="card">
+                                <h4>Result</h4>
+                                <p>Every non-zero lies within B positions of the diagonal. SpMM accesses rows of H in a
+                                    narrow window of width B × d.</p>
+                            </div>
+                            <div class="eq-box" style="font-size:14px; text-align:left;">Complexity: O(|E| log|E|)</div>
+                        </div>
+                        <div style="width:1px; background:var(--border);"></div>
+                        <div style="flex:1; display:flex; flex-direction:column; gap:14px;">
+                            <div class="pill pill-purple" style="align-self:flex-start;">METIS Graph Partitioning</div>
+                            <div class="card" style="flex:1;">
+                                <h4>How it works</h4>
+                                <p>Multilevel graph partitioning into k balanced subsets V₁…Vₖ minimizing edge cut.
+                                    Nodes within the same partition are grouped together.</p>
+                            </div>
+                            <div class="card">
+                                <h4>Result</h4>
+                                <p><strong style="color:#7c3aed;">Block-diagonal</strong> A': most non-zeros fall within
+                                    dense diagonal blocks of size ≈ n/k, fitting intra-partition features in L2.</p>
+                            </div>
+                            <div class="eq-box" style="font-size:14px; text-align:left;">
+                                EdgeCut = |{(i,j)∈E : separate partitions}|
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="divider"></div>
+                    <p style="font-size:14px; color:var(--muted); text-align:center;">
+                        Prior work applies RCM and METIS <em>independently</em> and treats partition count <span
+                            class="mono">k</span> as a hyperparameter swept blindly. <strong style="color:#d97706;">We
+                            do better.</strong>
+                    </p>
+                </div>
+                <div class="slide-label">4 / 10</div>
+            </div>
+
+            <div class="slide" id="s5">
+                <div class="topbar"></div>
+                <div class="slide-inner">
+                    <h2 class="section-title">Novel Contribution 1</h2>
+                    <h3 class="slide-title">Two-Level Hybrid Reordering</h3>
+
+                    <div class="flow" style="margin-bottom:22px;">
+                        <div class="flow-box" style="border-color:rgba(124,58,237,.3);">
+                            <div class="fb-label">Stage 1</div>
+                            <div class="fb-val">METIS Partitioning</div>
+                            <p style="font-size:12px; color:var(--muted); margin-top:6px;">Group nodes by community →
+                                block-diagonal structure</p>
+                        </div>
+                        <div class="flow-arrow">→</div>
+                        <div class="flow-box" style="border-color:rgba(37,99,235,.3);">
+                            <div class="fb-label">Stage 2</div>
+                            <div class="fb-val">Intra-block RCM</div>
+                            <p style="font-size:12px; color:var(--muted); margin-top:6px;">Apply RCM within each
+                                partition → band-diagonal blocks</p>
+                        </div>
+                        <div class="flow-arrow">→</div>
+                        <div class="flow-box" style="border-color:rgba(5,150,105,.3);">
+                            <div class="fb-label">Result</div>
+                            <div class="fb-val">π<sub>hybrid</sub></div>
+                            <p style="font-size:12px; color:var(--muted); margin-top:6px;">Block-diagonal +
+                                band-diagonal = multiplicative cache win</p>
+                        </div>
+                    </div>
+
+                    <div class="eq-box" style="margin-bottom:16px;">
+                        π<sub>hybrid</sub> = π<sub>RCM</sub><sup>local</sup> ∘ π<sub>METIS</sub>
+                    </div>
+
+                    <div class="card-grid card-grid-2">
+                        <div class="card">
+                            <h4>Why RCM alone isn't enough</h4>
+                            <p>Global RCM cannot exploit community structure. Large bandwidth remains due to
+                                cross-community edges.</p>
+                        </div>
+                        <div class="card">
+                            <h4>Why METIS alone isn't enough</h4>
+                            <p>Internal block ordering is arbitrary. Non-zeros within each block are still scattered
+                                even if communities are grouped.</p>
+                        </div>
+                        <div class="card">
+                            <h4>Hybrid advantage</h4>
+                            <p>Local bandwidth B<sub>p</sub> of subgraph G[Vₚ] ≪ global RCM bandwidth. Smaller graph →
+                                much tighter band.</p>
+                        </div>
+                        <div class="card">
+                            <h4>Correctness preserved</h4>
+                            <p>Composition of permutations is a permutation. O(|E| log|E|) total complexity. Accuracy
+                                unchanged.</p>
+                        </div>
+                    </div>
+                </div>
+                <div class="slide-label">5 / 10</div>
+            </div>
+
+            <div class="slide" id="s6">
+                <div class="topbar"></div>
+                <div class="slide-inner">
+                    <h2 class="section-title">Novel Contribution 2</h2>
+                    <h3 class="slide-title">Cache-Size-Aware Partition Selection</h3>
+
+                    <div style="display:flex; gap:24px; align-items:stretch; flex:1;">
+                        <div style="flex:1.1; display:flex; flex-direction:column; gap:14px;">
+                            <div class="card" style="border-color:rgba(8,145,178,.25);">
+                                <h4 style="color:#0e7490;">The Insight</h4>
+                                <p>For intra-partition SpMM to be fully cache-resident, the feature sub-matrix
+                                    H<sub>p</sub> ∈ ℝ<sup>|Vₚ|×d</sup> must fit in the L2 cache of capacity C bytes:</p>
+                            </div>
+                            <div class="eq-box">|Vₚ| · d · b ≤ C</div>
+                            <div class="card" style="border-color:rgba(5,150,105,.25);">
+                                <h4 style="color:#047857;">Derived Formula</h4>
+                                <p>Under balanced partitioning (|Vₚ| ≈ n/k), solving for k:</p>
+                            </div>
+                            <div class="eq-box"
+                                style="background:rgba(5,150,105,.05); border-color:rgba(5,150,105,.3); color:#059669; font-size:22px;">
+                                k* = ⌈ n · d · b / C ⌉
+                            </div>
+                            <div class="card">
+                                <h4>Practical Refinement</h4>
+                                <p>Add headroom factor α ∈ [1.0, 1.5] for inter-partition spill accesses:<br />
+                                    <span class="mono" style="font-size:12px;">k*_practical = ⌈α · n·d·b/C⌉</span>
+                                </p>
+                            </div>
+                        </div>
+
+                        <div style="flex:1; display:flex; flex-direction:column; gap:14px;">
+                            <p
+                                style="font-size:13px; color:var(--muted); font-weight:600; letter-spacing:1px; text-transform:uppercase; margin-bottom:4px;">
+                                Computed Values (A100, 40 MB L2)</p>
+                            <table>
+                                <thead>
+                                    <tr>
+                                        <th>Dataset</th>
+                                        <th>|H| (MB)</th>
+                                        <th>L2 Coverage</th>
+                                        <th style="color:#059669;">k*</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <tr>
+                                        <td><span class="mono">ogbn-arxiv</span></td>
+                                        <td>86</td>
+                                        <td>47%</td>
+                                        <td class="val-highlight">3</td>
+                                    </tr>
+                                    <tr>
+                                        <td><span class="mono">ogbn-products</span></td>
+                                        <td>960</td>
+                                        <td>4%</td>
+                                        <td class="val-highlight">24</td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                            <div class="card" style="margin-top:auto;">
+                                <h4>vs. Grid Search</h4>
+                                <p>Replaces blind sweep over k ∈ {4, 8, 16, 32, 64} with a single principled
+                                    hardware-derived value. <strong style="color:#059669;">Adapts automatically to any
+                                        GPU.</strong></p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="slide-label">6 / 10</div>
+            </div>
+
+            <div class="slide" id="s7">
+                <div class="topbar"></div>
+                <div class="slide-inner">
+                    <h2 class="section-title">Experimental Setup</h2>
+                    <h3 class="slide-title">Datasets, Models, and Hardware</h3>
+
+                    <div style="display:flex; gap:24px; flex:1;">
+                        <div style="flex:1; display:flex; flex-direction:column; gap:14px;">
+                            <p
+                                style="font-size:13px; color:var(--muted); font-weight:700; letter-spacing:1px; text-transform:uppercase;">
+                                OGB Datasets</p>
+                            <div class="card" style="border-color:rgba(37,99,235,.25);">
+                                <h4 style="color:#2563eb;">ogbn-arxiv</h4>
+                                <ul class="blist" style="margin-top:8px;">
+                                    <li>169K nodes, 1.1M edges</li>
+                                    <li>128-dim word2vec features, 86 MB total</li>
+                                    <li>L2 coverage: 47% — rapid iteration dataset</li>
+                                    <li>Training: full-batch on A100</li>
+                                </ul>
+                            </div>
+                            <div class="card" style="border-color:rgba(124,58,237,.25);">
+                                <h4 style="color:#7c3aed;">ogbn-products</h4>
+                                <ul class="blist" style="margin-top:8px;">
+                                    <li>2.4M nodes, 61.8M edges</li>
+                                    <li>100-dim features, <strong style="color:#dc2626;">~960 MB</strong> total</li>
+                                    <li>L2 coverage: 4% — nearly all cache-cold</li>
+                                    <li>Training: mini-batch (NeighborLoader, 2-hop [25,10])</li>
+                                </ul>
+                            </div>
+                        </div>
+
+                        <div style="flex:1; display:flex; flex-direction:column; gap:14px;">
+                            <p
+                                style="font-size:13px; color:var(--muted); font-weight:700; letter-spacing:1px; text-transform:uppercase;">
+                                GNN Models</p>
+                            <div class="card" style="border-color:rgba(8,145,178,.25);">
+                                <h4 style="color:#0e7490;">GraphSAGE</h4>
+                                <p>Fixed-size neighborhood sampling. Reordering improves spatial coherence of sampled
+                                    neighbor indices.</p>
+                            </div>
+                            <div class="card" style="border-color:rgba(217,119,6,.25);">
+                                <h4 style="color:#d97706;">GAT (Graph Attention Network)</h4>
+                                <p>Computes attention coefficients αᵢⱼ → <strong>2× neighbor feature accesses</strong>
+                                    per edge (attention + weighted sum). Doubles cache pressure — amplifies reordering
+                                    gains.</p>
+                            </div>
+                            <div class="card" style="margin-top:auto;">
+                                <h4>Hardware</h4>
+                                <p>2× NVIDIA A100-SXM4-80GB · 40 MB L2 cache per GPU · PyTorch + PyG</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="slide-label">7 / 10</div>
+            </div>
+
+            <div class="slide" id="s8">
+                <div class="topbar"></div>
+                <div class="slide-inner">
+                    <h2 class="section-title">Progress Report · Phase 1 Complete</h2>
+                    <h3 class="slide-title">Baseline Measurements &amp; Proxy Metrics</h3>
+
+                    <div style="display:flex; gap:24px; flex:1; align-items:stretch;">
+                        <div style="flex:1.2; display:flex; flex-direction:column; gap:14px;">
+                            <p
+                                style="font-size:13px; color:var(--muted); font-weight:700; letter-spacing:1px; text-transform:uppercase; margin-bottom:2px;">
+                                Baseline Timing (50-epoch avg)</p>
+                            <table>
+                                <thead>
+                                    <tr>
+                                        <th>Dataset</th>
+                                        <th>Model</th>
+                                        <th>ms/epoch</th>
+                                        <th>Val Acc</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <tr>
+                                        <td><span class="mono">ogbn-arxiv</span></td>
+                                        <td>GraphSAGE</td>
+                                        <td class="val-highlight">21.6</td>
+                                        <td>58.4%</td>
+                                    </tr>
+                                    <tr>
+                                        <td><span class="mono">ogbn-arxiv</span></td>
+                                        <td>GAT</td>
+                                        <td class="val-highlight">39.7</td>
+                                        <td>53.8%</td>
+                                    </tr>
+                                    <tr>
+                                        <td><span class="mono">ogbn-products</span></td>
+                                        <td>GraphSAGE</td>
+                                        <td class="val-highlight">26,728</td>
+                                        <td>86.2%</td>
+                                    </tr>
+                                    <tr>
+                                        <td><span class="mono">ogbn-products</span></td>
+                                        <td>GAT</td>
+                                        <td class="val-highlight">26,850</td>
+                                        <td>83.9%</td>
+                                    </tr>
+                                </tbody>
+                            </table>
+
+                            <div class="divider"></div>
+
+                            <p
+                                style="font-size:13px; color:var(--muted); font-weight:700; letter-spacing:1px; text-transform:uppercase; margin-bottom:2px;">
+                                CUDA Phase Breakdown (ogbn-arxiv)</p>
+                            <table>
+                                <thead>
+                                    <tr>
+                                        <th>Model</th>
+                                        <th>Forward (ms)</th>
+                                        <th>Backward (ms)</th>
+                                        <th>Opt (ms)</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <tr>
+                                        <td>GraphSAGE</td>
+                                        <td>12.2</td>
+                                        <td>9.0</td>
+                                        <td>0.09</td>
+                                    </tr>
+                                    <tr>
+                                        <td>GAT</td>
+                                        <td>16.8</td>
+                                        <td class="val-highlight" style="color:#dc2626;">22.4</td>
+                                        <td>0.09</td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+
+                        <div style="flex:1; display:flex; flex-direction:column; gap:14px;">
+                            <div class="card" style="border-color:rgba(217,119,6,.25);">
+                                <h4 style="color:#d97706;">Hardware Counter Restriction</h4>
+                                <p>Shared A100 server enforces <span class="mono">RmProfilingAdminOnly=1</span> — <span
+                                        class="mono">ncu</span> L2 hit rate profiling is blocked. We adopt two software
+                                    proxy metrics instead.</p>
+                            </div>
+                            <div class="card" style="border-color:rgba(37,99,235,.25);">
+                                <h4>Proxy: Analytical Cache Coverage (ACC)</h4>
+                                <p style="font-family:'JetBrains Mono',monospace; font-size:13px; color:#1d4ed8;">ACC =
+                                    min(1, C / (n·d·b))</p>
+                                <p style="margin-top:6px;">Upper bound on L2 hit rate under perfect spatial locality.
+                                </p>
+                            </div>
+                            <div class="card" style="border-color:rgba(5,150,105,.25);">
+                                <h4>Proxy: Temporal Reuse Ratio (TRR)</h4>
+                                <p style="font-family:'JetBrains Mono',monospace; font-size:13px; color:#059669;">TRR =
+                                    (total − unique) / total fetches</p>
+                                <p style="margin-top:6px;">Fraction of neighbor fetches that reuse a previously accessed
+                                    row. Directly trackable in software.</p>
+                            </div>
+                            <div class="card">
+                                <h4>Key Finding: GAT Backward Dominates</h4>
+                                <p>GAT backward (22.4ms) &gt; forward (16.8ms) due to per-edge attention backprop —
+                                    <strong style="color:#7c3aed;">makes GAT the stronger test case</strong> for
+                                    locality-improving reordering.</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="slide-label">8 / 10</div>
+            </div>
+
+            <div class="slide" id="s9">
+                <div class="topbar"></div>
+                <div class="slide-inner">
+                    <h2 class="section-title">Project Roadmap</h2>
+                    <h3 class="slide-title">Current Status &amp; Next Steps</h3>
+
+                    <div style="display:flex; gap:28px; flex:1;">
+                        <div style="flex:1;">
+                            <div class="timeline">
+                                <div class="tl-item">
+                                    <div class="tl-dot tl-done">✓</div>
+                                    <div class="tl-body">
+                                        <h4>Env &amp; Baselines
+                                            <p>A100 profiling setup, OGB datasets loaded, GraphSAGE + GAT trained,
+                                                timing recorded, proxy metrics computed.</p>
+                                    </div>
+                                </div>
+                                <div class="tl-item">
+                                    <div class="tl-dot tl-ip">⋯</div>
+                                    <div class="tl-body">
+                                        <h4>Baseline Reordering
+                                            <p>RCM implemented, edge-set correctness verified on ogbn-arxiv. Timing +
+                                                TRR measurements pending. METIS pipeline not yet started.</p>
+                                    </div>
+                                </div>
+                                <div class="tl-item">
+                                    <div class="tl-dot tl-todo">3</div>
+                                    <div class="tl-body">
+                                        <h4>Novel Methods </h4>
+                                        <p>Implement cache-aware k* selection and two-level hybrid pipeline (METIS →
+                                            intra-block RCM). Calibrate headroom factor α.</p>
+                                    </div>
+                                </div>
+                                <div class="tl-item">
+                                    <div class="tl-dot tl-todo">4</div>
+                                    <div class="tl-body">
+                                        <h4>Full Profiling </h4>
+                                        <p>Run all 5 configurations at scale, collect ncu traces (if available) or
+                                            TRR/ACC, build full ablation table.</p>
+                                    </div>
+                                </div>
+                                <div class="tl-item">
+                                    <div class="tl-dot tl-todo">5</div>
+                                    <div class="tl-body">
+                                        <h4>Analysis &amp; Report </h4>
+                                        <p>Sparsity visualization, TRR vs. epoch time Pareto plot, final ablation table,
+                                            write-up.</p>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        <div style="flex:0.8; display:flex; flex-direction:column; gap:14px;">
+                            <p
+                                style="font-size:13px; color:var(--muted); font-weight:700; letter-spacing:1px; text-transform:uppercase;">
+                                Evaluation: 5 Configurations</p>
+                            <div class="card">
+                                <ul class="blist">
+                                    <li><strong style="color:#0f172a;">Baseline</strong> — original random ordering</li>
+                                    <li><strong style="color:#2563eb;">RCM-only</strong> — scipy.sparse.csgraph</li>
+                                    <li><strong style="color:#7c3aed;">METIS-only</strong> — swept k ∈ {4,8,16,32}</li>
+                                    <li><strong style="color:#0e7490;">METIS + k*</strong> — cache-aware partition count
+                                    </li>
+                                    <li><strong style="color:#059669;">Hybrid</strong> — METIS → intra-block RCM</li>
+                                </ul>
+                            </div>
+                            <div class="card">
+                                <h4>Target</h4>
+                                <p>15–30% latency reduction for baseline methods. Additional gain from hybrid. TRR
+                                    improvements confirm locality improvements even without hardware counters.</p>
+                            </div>
+                            <div class="card" style="border-color:rgba(5,150,105,.25);">
+                                <h4>Sanity Check</h4>
+                                <p>Node classification accuracy must remain <strong
+                                        style="color:#059669;">identical</strong> across all 5 configs — reordering is
+                                    lossless.</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="slide-label">9 / 10</div>
+            </div>
+
+            <div class="slide" id="s10">
+                <div class="topbar"></div>
+                <div class="bg-glow glow-blue" style="opacity:.7;"></div>
+                <div class="bg-glow glow-purple" style="opacity:.7;"></div>
+                <div class="slide-inner" style="justify-content:center; position:relative; z-index:1;">
+                    <h2 class="section-title">Summary</h2>
+                    <h3 class="slide-title" style="margin-bottom:32px;">What We're Doing &amp; Why It Matters</h3>
+
+                    <div class="card-grid card-grid-2" style="margin-bottom:24px;">
+                        <div class="card" style="border-color:rgba(220,38,38,.25);">
+                            <h4>Problem</h4>
+                            <p>GNN training on GPUs bottlenecked by poor L2 cache locality during sparse message-passing
+                                (SpMM). Random node ordering → near-zero cache hit rate at scale.</p>
+                        </div>
+                        <div class="card" style="border-color:rgba(37,99,235,.25);">
+                            <h4>Approach</h4>
+                            <p>Lossless node reordering (permutation π) to cluster connected nodes at nearby indices.
+                                Tested via RCM and METIS baselines + 2 novel methods.</p>
+                        </div>
+                        <div class="card" style="border-color:rgba(124,58,237,.25);">
+                            <h4>Novel Contributions</h4>
+                            <p><strong style="color:#7c3aed;">Hybrid π:</strong> METIS partitioning → intra-block RCM
+                                for block + band diagonal structure.<br />
+                                <strong style="color:#0e7490;">k*:</strong> Analytically derive optimal partition count
+                                from GPU L2 capacity.
+                            </p>
+                        </div>
+                        <div class="card" style="border-color:rgba(5,150,105,.25);">
+                            <h4>Progress</h4>
+                            <p>Phase 1 complete: baselines measured on real A100 hardware. RCM implemented. Phases 2–5
+                                ongoing — full ablation across 5 configs on 2 datasets × 2 models.</p>
+                        </div>
+                    </div>
+
+                    <div class="divider"></div>
+                    <div style="text-align:center;">
+                        <p style="font-size:22px; font-weight:700; color:#0f172a;">Questions?</p>
+                        <p style="font-size:15px; color:var(--muted); margin-top:8px;">Sahil Murtaza · Youke Zhang ·
+                            Zach Yu · Albert Liu &nbsp;|&nbsp; University of Virginia</p>
+                    </div>
+                </div>
+                <div class="slide-label">10 / 10</div>
+            </div>
+
+        </div>
+    </div>
+    <div id="nav">
+        <button id="btn-prev" title="Previous (←)">◀</button>
+        <span id="slide-counter">1 / 10</span>
+        <button id="btn-next" title="Next (→)">▶</button>
+    </div>
+    <div id="progress-bar"></div>
+
+    <script>
+        /* ─────────────── MATRIX CANVAS DRAW ─────────────── */
+        function drawMatrix(canvasId, banded) {
+            const canvas = document.getElementById(canvasId);
+            if (!canvas) return;
+            const ctx = canvas.getContext('2d');
+            const N = 40, W = canvas.width, cellSize = W / N;
+            ctx.fillStyle = '#f8fafc'; ctx.fillRect(0, 0, W, W);
+
+            const rand = (seed) => { let x = Math.sin(seed) * 10000; return x - Math.floor(x); };
+            ctx.fillStyle = 'rgba(37,99,235,0.6)';
+            for (let i = 0; i < N; i++) {
+                for (let j = 0; j < N; j++) {
+                    let prob;
+                    if (banded) {
+                        const dist = Math.abs(i - j);
+                        prob = dist === 0 ? 0.9 : dist <= 3 ? 0.55 : dist <= 6 ? 0.15 : 0.01;
+                    } else {
+                        prob = 0.06;
+                    }
+                    if (rand(i * N + j + (banded ? 1000 : 0)) < prob) {
+                        ctx.fillRect(j * cellSize, i * cellSize, cellSize - 0.5, cellSize - 0.5);
+                    }
+                }
+            }
+        }
+
+        /* ─────────────── SLIDE ENGINE ─────────────── */
+        const TOTAL = 10;
+        let current = 1;
+        let transitioning = false;
+
+        function getSlide(n) { return document.getElementById('s' + n); }
+
+        function go(next) {
+            if (transitioning || next < 1 || next > TOTAL || next === current) return;
+            transitioning = true;
+            const from = getSlide(current);
+            const to = getSlide(next);
+            const dir = next > current ? 1 : -1;
+
+            // Setup incoming
+            to.style.transform = `translateX(${dir * 60}px)`;
+            to.style.opacity = '0';
+            to.classList.remove('exit');
+            to.classList.add('active');
+            to.style.pointerEvents = 'auto';
+
+            // Force reflow
+            to.offsetHeight;
+
+            // Animate out
+            from.style.transform = `translateX(${-dir * 60}px)`;
+            from.style.opacity = '0';
+            from.style.pointerEvents = 'none';
+
+            // Animate in
+            to.style.transition = 'opacity 0.45s ease, transform 0.45s ease';
+            to.style.transform = 'translateX(0)';
+            to.style.opacity = '1';
+
+            setTimeout(() => {
+                from.classList.remove('active');
+                from.style.transform = '';
+                from.style.opacity = '';
+                from.style.transition = '';
+                to.style.transition = '';
+                current = next;
+                updateNav();
+                transitioning = false;
+            }, 460);
+        }
+
+        function updateNav() {
+            document.getElementById('slide-counter').textContent = current + ' / ' + TOTAL;
+            const pct = ((current - 1) / (TOTAL - 1)) * 100;
+            document.getElementById('progress-bar').style.width = pct + '%';
+        }
+
+        document.getElementById('btn-prev').addEventListener('click', () => go(current - 1));
+        document.getElementById('btn-next').addEventListener('click', () => go(current + 1));
+
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'ArrowRight' || e.key === ' ' || e.key === 'PageDown') { e.preventDefault(); go(current + 1); }
+            if (e.key === 'ArrowLeft' || e.key === 'PageUp') { e.preventDefault(); go(current - 1); }
+        });
+
+        /* ─────────────── VIEWPORT SCALING ─────────────── */
+        function scaleViewport() {
+            const vp = document.getElementById('viewport');
+            const W = window.innerWidth, H = window.innerHeight;
+            const scaleX = W / 1280, scaleY = H / 720;
+            const scale = Math.min(scaleX, scaleY) * 0.94;
+            vp.style.transform = `scale(${scale})`;
+        }
+        window.addEventListener('resize', scaleViewport);
+        scaleViewport();
+
+        /* ─────────────── INIT ─────────────── */
+        window.addEventListener('load', () => {
+            drawMatrix('matBefore', false);
+            drawMatrix('matAfter', true);
+            updateNav();
+        });
+    </script>
+</body>
+
+</html>

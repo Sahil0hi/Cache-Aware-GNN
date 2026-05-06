@@ -128,19 +128,24 @@ accessed row:
 TRR rises when reordering places connected nodes at nearby indices, causing
 their feature rows to share cache lines.
 
-Table~\ref{tab:proxy} shows baseline proxy values for both datasets.
+Table~\ref{tab:proxy} shows the two proxy values for both datasets.
 For \texttt{ogbn-arxiv}, the feature matrix (86\,MB) exceeds the 40\,MB L2,
-yielding ACC\,=\,47\%; with random ordering the effective hit rate is far lower.
-For \texttt{ogbn-products} (960\,MB), ACC\,=\,4\%---the graph is entirely
-cache-cold at baseline.
+yielding a cache coverage of 47\%; only that fraction of accesses
+can be served from L2 under perfect spatial locality---real hit rates
+will be lower with random ordering.
+For \texttt{ogbn-products} (960\,MB), only 4\% of the feature matrix
+fits in L2: the graph is almost entirely cache-cold at baseline,
+making it the stronger benchmark for evaluating reordering gains.
 
 \begin{table}[h]
 \centering
-\caption{Baseline proxy cache metrics (A100, L2\,=\,40\,MB).}
+\caption{Baseline proxy cache metrics (A100, L2\,=\,40\,MB).
+\emph{L2 Coverage} is the fraction of the feature matrix that fits in the
+L2 cache---it is \textbf{not} node-classification accuracy.}
 \label{tab:proxy}
 \begin{tabular}{lccc}
 \toprule
-\textbf{Dataset} & \textbf{$|H|$ (MB)} & \textbf{ACC (\%)} & \textbf{$k^*$} \\
+\textbf{Dataset} & \textbf{$|H|$ (MB)} & \textbf{L2 Coverage (\%)} & \textbf{$k^*$} \\
 \midrule
 \texttt{ogbn-arxiv}    &  86 & 47 &  3 \\
 \texttt{ogbn-products} & 960 &  4 & 24 \\
@@ -176,15 +181,18 @@ measured epochs after a 10-epoch warmup).
 \begin{table}[h]
 \centering
 \caption{Measured baseline results. Full-batch on \texttt{ogbn-arxiv};
-mini-batch (NeighborLoader) on \texttt{ogbn-products}.}
+mini-batch on \texttt{ogbn-products} (NeighborLoader, 2-hop $[25,10]$,
+batch\,2048). Note: val acc uses sampled inference at eval time
+(not full-graph), so values exceed the OGB leaderboard.}
 \label{tab:baseline}
 \begin{tabular}{llrrl}
 \toprule
 \textbf{Dataset} & \textbf{Model} & \textbf{ms/epoch} & \textbf{std} & \textbf{Val Acc} \\
 \midrule
-\texttt{ogbn-arxiv}    & GraphSAGE & 21.6  & 0.15 & 58.4\% \\
-\texttt{ogbn-arxiv}    & GAT       & 39.7  & 0.83 & 53.8\% \\
-\texttt{ogbn-products} & GraphSAGE & 19{,}846 & 2{,}171 & 89.7\% \\
+\texttt{ogbn-arxiv}    & GraphSAGE & 21.6     & 0.15 & 58.4\% \\
+\texttt{ogbn-arxiv}    & GAT       & 39.7     & 0.83 & 53.8\% \\
+\texttt{ogbn-products} & GraphSAGE & 26{,}728 & 428  & 86.2\% \\
+\texttt{ogbn-products} & GAT       & 26{,}850 & 428  & 83.9\% \\
 \bottomrule
 \end{tabular}
 \end{table}
