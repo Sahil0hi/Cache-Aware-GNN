@@ -53,6 +53,9 @@ def merge_rows(timing_rows, phase3_rows):
     seen = set()
     for r in timing_rows:
         key = (r.get("dataset"), r.get("model"), r.get("reordering"))
+        if key in seen:
+            # Skip duplicate timing rows (keep only the first occurrence)
+            continue
         if key in p3_index:
             # Phase 3 row has more fields — prefer it
             merged.append(p3_index[key])

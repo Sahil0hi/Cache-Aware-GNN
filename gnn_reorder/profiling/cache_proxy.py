@@ -34,6 +34,7 @@ no GPU hardware access needed.
 
 import torch
 import numpy as np
+from collections import OrderedDict
 from torch_geometric.data import Data
 
 # A100 GPU L2 cache capacity in bytes (40 MB)
@@ -44,27 +45,41 @@ def temporal_reuse_ratio(
     edge_index: torch.Tensor,
     train_mask: torch.Tensor,
     sample_size: int = 100_000,
+    feat_dim: int = 128,
+    bytes_per_element: int = 4,
+    l2_bytes: int = A100_L2_BYTES,
 ) -> dict:
     """
-    Estimate temporal reuse ratio for one SpMM pass over training nodes.
+    Estimate temporal reuse ratio for one SpMM pass over training nodes,
+    using a finite LRU cache model sized to the GPU L2 capacity.
 
     For each training node (row), the SpMM fetches feature vectors for all
     its neighbors (column indices). TRR measures how many of those fetches
-    hit a node that was already fetched by an earlier training row.
+    hit a node whose feature vector is still resident in the simulated L2.
+
+    The cache capacity in nodes is:
+        cache_nodes = L2_bytes / (feat_dim * bytes_per_element)
+
+    An infinite `seen` set would overestimate TRR (every node eventually
+    stays "seen" forever), making TRR insensitive to reordering. The finite
+    LRU window makes TRR correctly sensitive to locality improvements.
 
     Args:
-        edge_index : [2, E] edge tensor (src, dst)
-        train_mask : boolean mask or index tensor of training nodes
-        sample_size: max training nodes to evaluate (for speed on large graphs)
+        edge_index         : [2, E] edge tensor (src, dst)
+        train_mask         : boolean mask or index tensor of training nodes
+        sample_size        : max training nodes to evaluate (for speed)
+        feat_dim           : feature dimension (used to size the cache window)
+        bytes_per_element  : bytes per feature element (4 for float32)
+        l2_bytes           : GPU L2 cache capacity in bytes (default: A100 40 MB)
 
     Returns dict with:
         total_accesses   - total neighbor fetches counted
-        unique_accesses  - number of distinct nodes fetched
+        unique_accesses  - number of distinct nodes fetched (global)
         trr              - temporal reuse ratio (0=no reuse, 1=perfect reuse)
         mean_degree      - average degree of training nodes
+        cache_capacity   - number of node feature vectors that fit in L2
     """
     src, dst = edge_index[0], edge_index[1]
-    n = int(edge_index.max().item()) + 1
 
     # Get training node indices
     if train_mask.dtype == torch.bool:
@@ -77,19 +92,23 @@ def temporal_reuse_ratio(
         idx = torch.randperm(train_nodes.numel())[:sample_size]
         train_nodes = train_nodes[idx]
 
-    # Build adjacency: for each training node, collect its neighbors
-    # We use a set to track which nodes have been fetched so far
-    seen = set()
-    total_accesses = 0
-    total_reused   = 0
-
     # Build a fast neighbor lookup (COO → per-node list)
-    src_np  = src.numpy()
-    dst_np  = dst.numpy()
+    src_np = src.numpy()
+    dst_np = dst.numpy()
     from collections import defaultdict
     adj = defaultdict(list)
     for u, v in zip(src_np, dst_np):
         adj[u].append(v)
+
+    # Finite LRU cache sized to GPU L2 capacity.
+    # Using an OrderedDict as an O(1) LRU approximation:
+    # most-recently-used items are at the end; evict from the front.
+    cache_capacity = max(1, l2_bytes // (feat_dim * bytes_per_element))
+    lru_cache: OrderedDict = OrderedDict()
+
+    total_accesses = 0
+    total_reused   = 0
+    all_seen: set  = set()   # for unique_accesses count only
 
     train_list = train_nodes.numpy().tolist()
     degrees = []
@@ -98,21 +117,27 @@ def temporal_reuse_ratio(
         degrees.append(len(neighbors))
         for nb in neighbors:
             total_accesses += 1
-            if nb in seen:
+            all_seen.add(nb)
+            if nb in lru_cache:
+                # Cache hit — move to most-recently-used end
+                lru_cache.move_to_end(nb)
                 total_reused += 1
             else:
-                seen.add(nb)
+                # Cache miss — insert; evict LRU entry if over capacity
+                lru_cache[nb] = True
+                if len(lru_cache) > cache_capacity:
+                    lru_cache.popitem(last=False)
 
-    unique_accesses = len(seen)
     trr = total_reused / total_accesses if total_accesses > 0 else 0.0
     mean_degree = float(np.mean(degrees)) if degrees else 0.0
 
     return {
-        "total_accesses": total_accesses,
-        "unique_accesses": unique_accesses,
-        "temporal_reuse_ratio": round(trr, 4),
-        "mean_train_degree": round(mean_degree, 2),
-        "nodes_sampled": len(train_list),
+        "total_accesses":        total_accesses,
+        "unique_accesses":       len(all_seen),
+        "temporal_reuse_ratio":  round(trr, 4),
+        "mean_train_degree":     round(mean_degree, 2),
+        "nodes_sampled":         len(train_list),
+        "cache_capacity":        cache_capacity,
     }
 
 

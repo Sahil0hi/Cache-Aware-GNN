@@ -118,7 +118,8 @@ def compute_cache_metrics(data, split_idx, feat_dim, label=""):
 
     train_idx = split_idx["train"]
     trr_info = temporal_reuse_ratio(
-        data.edge_index, train_idx, sample_size=50_000
+        data.edge_index, train_idx, sample_size=50_000,
+        feat_dim=feat_dim,
     )
 
     print(f"  [{label}]  ACC={100*acc_info['cache_coverage']:.1f}%  "
@@ -156,6 +157,12 @@ def run_training(
     """
     if neighbor_sizes is None:
         neighbor_sizes = DEFAULT_NEIGHBOR_SIZES
+
+    # Fixed seed so model weights and dropout are identical across configs,
+    # making accuracy comparisons between reordering strategies valid.
+    torch.manual_seed(42)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(42)
 
     use_fullbatch = dataset_name in FULLBATCH_DATASETS
     in_channels = data.x.shape[1]
