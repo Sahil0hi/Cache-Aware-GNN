@@ -93,12 +93,13 @@ def _build_adjacency_list(data: Data) -> list:
     Returns a list of length n; each element is a list of neighbor indices.
     """
     n = data.num_nodes
-    adj = [[] for _ in range(n)]
-    src, dst = data.edge_index[0].tolist(), data.edge_index[1].tolist()
-    for u, v in zip(src, dst):
-        adj[u].append(v)
-    # pymetis requires numpy arrays
-    return [np.array(neighbors, dtype=np.int64) for neighbors in adj]
+    src = data.edge_index[0].numpy()
+    dst = data.edge_index[1].numpy()
+    sort_idx = np.argsort(src, kind="stable")
+    src_sorted = src[sort_idx]
+    dst_sorted = dst[sort_idx]
+    boundaries = np.searchsorted(src_sorted, np.arange(n + 1))
+    return [dst_sorted[boundaries[i]: boundaries[i + 1]] for i in range(n)]
 
 
 def _part_sizes(part_labels: np.ndarray, k: int) -> np.ndarray:

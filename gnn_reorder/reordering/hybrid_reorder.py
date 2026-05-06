@@ -48,6 +48,11 @@ except ImportError:
 # A100 GPU L2 cache capacity in bytes (40 MB)
 A100_L2_BYTES = 40 * 1024 * 1024
 
+# Minimum partition size (in nodes) for RCM to meaningfully reduce bandwidth.
+# Partitions smaller than this tend to have too few internal edges for RCM
+# to produce a significant locality improvement over arbitrary ordering.
+MIN_NODES_PER_PARTITION = 500
+
 
 # ---------------------------------------------------------------------------
 # Public API
@@ -84,8 +89,9 @@ def cache_aware_k_star(
     """
     feat_bytes = n_nodes * feat_dim * bytes_per_element
     k_star = math.ceil(alpha * feat_bytes / l2_bytes)
-    # METIS requires k ≥ 2 to be meaningful
-    return max(2, k_star)
+    # Cap k so each partition has at least MIN_NODES_PER_PARTITION nodes for RCM to be meaningful
+    max_k_for_density = max(2, n_nodes // MIN_NODES_PER_PARTITION)
+    return max(2, min(k_star, max_k_for_density))
 
 
 def hybrid_reorder(
@@ -159,6 +165,11 @@ def hybrid_reorder(
     global_ordering = np.empty(n, dtype=np.int64)
     offset = 0
 
+    # Pre-compute global out-degrees for fallback ordering (used when a partition
+    # has no internal edges and RCM cannot be applied)
+    src_all = data.edge_index[0].numpy()
+    out_degrees = np.bincount(src_all, minlength=n)
+
     for p, part_nodes in enumerate(nodes_in_part):
         part_size = len(part_nodes)
         if part_size == 0:
@@ -170,8 +181,9 @@ def hybrid_reorder(
         p_cols = local_dst[edge_mask]
 
         if part_size == 1 or p_rows.size == 0:
-            # Trivial partition or no internal edges: keep METIS order
-            global_ordering[offset: offset + part_size] = part_nodes
+            # Fallback: sort by global out-degree descending within partition
+            sorted_local = np.argsort(out_degrees[part_nodes])[::-1]
+            global_ordering[offset: offset + part_size] = part_nodes[sorted_local]
             offset += part_size
             continue
 
