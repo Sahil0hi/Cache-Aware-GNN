@@ -35,5 +35,5 @@ __pycache__/
 *.sqlite
 
 # Results (data files — keep the directory, not the contents)
-gnn_reorder/results/*.csv
-gnn_reorder/results/*.qdstrm
+# gnn_reorder/results/*.csv
+# gnn_reorder/results/*.qdstrm
