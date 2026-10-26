@@ -1,29 +1,29 @@
-PRJ = main
+PYTHON ?= python3
+PDFTOPPM ?= pdftoppm
+PREVIEW_DPI ?= 120
+LATEXRUN = ../.build/latexrun.py
+SOURCES = main.tex references.bib $(wildcard figures/*.png figures/*.pdf figures/*.jpg)
 
-# Small cheat to allow synchronization between PDF and .tex for supported editors (run `make S=1`)
-ifdef S
-EXTRA = -synctex=1
-endif
+.PHONY: all previews view clean
 
-PYTHON3 := $(shell type -P python3 || echo "")
+all: main.pdf
 
-ifeq ($(PYTHON3),)
-BUILD = pdflatex ${EXTRA} $< && (ls *.aux | xargs -n 1 bibtex) || pdflatex ${EXTRA} $< || pdflatex ${EXTRA} $<
-else
-BUILD = python3 ../.build/latexrun.py -O . --latex-args="${EXTRA}" $<
-endif
+# latexrun runs pdflatex and BibTeX as many times as needed for references.
+main.pdf: $(SOURCES) $(LATEXRUN)
+	$(PYTHON) $(LATEXRUN) -O . --latex-args="-interaction=nonstopmode -halt-on-error" main.tex
 
-SOURCES=$(shell find . -name '*.tex' -or -name '*.bib' -or -name '*.sty')
+# Render every PDF page, replacing old previews only after a successful render.
+previews: main.pdf
+	@command -v $(PDFTOPPM) >/dev/null || { echo "Install Poppler for pdftoppm (macOS: brew install poppler)."; exit 1; }
+	@mkdir -p previews
+	@set -e; preview_tmp=$$(mktemp -d); trap 'rm -rf "$$preview_tmp"' EXIT HUP INT TERM; \
+		$(PDFTOPPM) -r $(PREVIEW_DPI) -png main.pdf "$$preview_tmp/page"; \
+		rm -f previews/page-*.png; \
+		mv "$$preview_tmp"/page-*.png previews/
 
-all: $(addsuffix .pdf,${PRJ})
+view: main.pdf
+	open main.pdf
 
-%.pdf: %.tex ${SOURCES}
-	${BUILD}
-
-view: $(addsuffix .view,${PRJ})
-
-%.view: %.pdf
-	open $< &
-
+# Keep the published PDF and page previews; remove only intermediate files.
 clean:
-	/bin/rm -rf *.toc *.aux $(addsuffix .bbl,${PRJ}) *.blg *.log *~* *.bak *.out $(addsuffix .pdf,${PRJ}) cut.sh .latexrun.db* *.fls *.rel _region_.* *.synctex.gz
+	rm -f *.aux *.bbl *.blg *.log *.out *.toc *.fls *.rel *.synctex.gz .latexrun.db*

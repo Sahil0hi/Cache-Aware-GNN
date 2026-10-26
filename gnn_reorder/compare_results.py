@@ -201,38 +201,34 @@ def plot_pareto(rows):
         print("[compare] No rows with both timing and TRR; skipping Pareto plot.")
         return
 
-    from collections import defaultdict
-    groups = defaultdict(list)
-    for r in valid:
-        key = (r.get("model", "?"), r.get("reordering", "?"))
-        groups[key].append((r["_ms"], r["_trr"]))
-
+    datasets = sorted({r["dataset"] for r in valid})
     markers = ["o", "s", "^", "D", "v", "P", "X", "*"]
     colours = plt.rcParams["axes.prop_cycle"].by_key()["color"]
-
-    fig, ax = plt.subplots(figsize=(9, 5))
-    for idx, ((model, reorder), vals) in enumerate(sorted(groups.items())):
-        ms_mean  = float(np.mean([v[0] for v in vals]))
-        trr_mean = float(np.mean([v[1] for v in vals]))
-        ax.scatter(
-            ms_mean, trr_mean,
-            marker=markers[idx % len(markers)],
-            color=colours[idx % len(colours)],
-            s=130, zorder=3,
-            label=f"{model} / {reorder}",
-        )
-        ax.annotate(
-            f"{model}\n{reorder}",
-            xy=(ms_mean, trr_mean),
-            xytext=(5, 4), textcoords="offset points",
-            fontsize=7,
-        )
-
-    ax.set_xlabel("Mean epoch time (ms)  — lower is better", fontsize=10)
-    ax.set_ylabel("Temporal Reuse Ratio (%)  — higher is better", fontsize=10)
-    ax.set_title("Cache-Efficiency / Speed Pareto Frontier", fontsize=11)
-    ax.legend(fontsize=7, loc="best")
-    ax.grid(True, alpha=0.3)
+    fig, axes = plt.subplots(1, len(datasets),
+                             figsize=(9 * len(datasets), 6), squeeze=False)
+    for col, dataset in enumerate(datasets):
+        ax = axes[0][col]
+        groups = {}
+        for r in valid:
+            if r["dataset"] != dataset:
+                continue
+            key = (r.get("model", "?"), r.get("reordering", "?"))
+            groups.setdefault(key, []).append((r["_ms"], r["_trr"]))
+        for idx, ((model, reorder), vals) in enumerate(sorted(groups.items())):
+            ms_mean = float(np.mean([v[0] for v in vals]))
+            trr_mean = float(np.mean([v[1] for v in vals]))
+            ax.scatter(
+                ms_mean, trr_mean,
+                marker=markers[idx % len(markers)],
+                color=colours[idx % len(colours)],
+                s=100, zorder=3, label=f"{model} / {reorder}",
+            )
+        ax.set_xlabel("Mean epoch time (ms) — lower is better", fontsize=10)
+        ax.set_ylabel("Simulated temporal reuse (%) — higher is better", fontsize=10)
+        ax.set_title(dataset, fontsize=11)
+        ax.legend(fontsize=7, loc="best")
+        ax.grid(True, alpha=0.3)
+    fig.suptitle("Cache-Efficiency / Speed by Configuration", fontsize=12)
 
     os.makedirs(FIGURES_DIR, exist_ok=True)
     out_path = os.path.join(FIGURES_DIR, "pareto.png")

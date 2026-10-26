@@ -8,14 +8,13 @@ Two complementary metrics are computed:
 
 1. Temporal Reuse Ratio (TRR)
    ---------------------------
-   During one SpMM pass, how often is a neighbor feature vector accessed
-   MORE than once across all training rows?
+   Simulate neighbor feature fetches with a finite, fully associative LRU
+   cache sized from the assumed L2 capacity and feature-vector width.
 
-       TRR = (total_accesses - unique_accesses) / total_accesses
+       TRR = simulated_cache_hits / total_accesses
 
-   A high TRR means many accesses can be served from cache rather than HBM.
-   With random ordering TRR ≈ avg_degree / n_nodes (very low).
-   After reordering, nearby rows share neighbors → TRR increases.
+   This is a software locality proxy, not a measured GPU cache hit rate.
+   Random subsampling of training rows changes the simulated access order.
 
 2. Analytical Cache Coverage (ACC)
    ---------------------------------
@@ -24,9 +23,8 @@ Two complementary metrics are computed:
        ACC = min(1.0, C / (n * d * b))
 
    Where C = L2 capacity (bytes), n = nodes, d = feature dim, b = bytes/element.
-   ACC is the theoretical upper bound on hit rate assuming perfect spatial locality.
-   With random ordering the effective hit rate ≈ ACC × (bandwidth/n),
-   which is much smaller.
+   ACC describes capacity only; it is invariant under node permutation and
+   does not predict the hardware cache hit rate.
 
 Both metrics require only the graph's edge_index and feature dimensions —
 no GPU hardware access needed.
@@ -75,7 +73,7 @@ def temporal_reuse_ratio(
     Returns dict with:
         total_accesses   - total neighbor fetches counted
         unique_accesses  - number of distinct nodes fetched (global)
-        trr              - temporal reuse ratio (0=no reuse, 1=perfect reuse)
+        temporal_reuse_ratio - simulated hit fraction (0=no reuse, 1=perfect reuse)
         mean_degree      - average degree of training nodes
         cache_capacity   - number of node feature vectors that fit in L2
     """
@@ -163,7 +161,7 @@ def analytical_cache_coverage(
         feature_matrix_mb   - size of full feature matrix in MB
         l2_cache_mb         - L2 cache size in MB
         cache_coverage      - fraction of feature matrix that fits in L2
-        estimated_miss_rate - 1 - cache_coverage (lower bound on miss rate)
+        estimated_miss_rate - 1 - cache_coverage (capacity complement, not a measured miss rate)
         k_star              - optimal METIS k from the paper's formula
     """
     feat_bytes = n_nodes * feat_dim * bytes_per_element

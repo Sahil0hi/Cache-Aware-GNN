@@ -37,7 +37,8 @@ gnn_reorder/
 
 ```bash
 # 1. Install dependencies (GPU machine with CUDA)
-pip install -r requirements.txt
+cd gnn_reorder  # from the repository root
+python -m pip install -r requirements.txt
 
 # 2. Download datasets (optional — done automatically by the run scripts)
 python data/download_datasets.py
@@ -115,8 +116,8 @@ servers, two software proxy metrics are used:
 
 | Metric | Formula | Meaning |
 |--------|---------|---------|
-| **ACC** (Analytical Cache Coverage) | `min(1, C / (n·d·b))` | Fraction of feature matrix that fits in L2 |
-| **TRR** (Temporal Reuse Ratio) | `(total_fetches - unique_fetches) / total_fetches` | Fraction of neighbor fetches served from cache |
+| **ACC** (Analytical Cache Coverage) | `min(1, C / (n·d·b))` | Fraction of feature matrix that fits in the assumed L2 capacity |
+| **TRR** (Temporal Reuse Ratio) | `simulated_LRU_hits / total_fetches` | Fraction of neighbor fetches hitting a finite software LRU cache |
 
 ## Hardware Profiling with ncu (if admin access available)
 
@@ -134,8 +135,41 @@ from reordering.hybrid_reorder import hybrid_reorder, cache_aware_k_star
 
 # Derive k* from hardware
 k_star = cache_aware_k_star(n_nodes=169343, feat_dim=128, alpha=1.0)
-# k_star = 3 for ogbn-arxiv on an A100 (40 MB L2)
+# k_star = 3 for ogbn-arxiv on an A100 (40 MiB L2)
 
 # Apply two-level permutation
 data_reordered, perm = hybrid_reorder(data, k=k_star, verify=True)
 ```
+
+## Saved results and interpretation
+
+The committed CSVs are the recorded experiment outputs. Regenerate their charts
+without downloading datasets or running GPU training with:
+
+```bash
+python compare_results.py
+```
+
+Run this command inside `gnn_reorder/`. It requires only Matplotlib and NumPy.
+Training additionally requires PyTorch, PyG, OGB, SciPy, and METIS. For
+`ogbn-products`, PyG's `NeighborLoader` also requires a compatible `pyg-lib` or
+`torch-sparse` installation for your PyTorch/CUDA build.
+
+TRR is a software simulation, not a measured hardware L2 hit rate. ACC depends
+only on the feature matrix size and assumed 40 MiB L2 capacity, so it does not
+change under permutation. The recorded TRR implementation randomly subsamples
+training nodes when there are more than 50,000; its access order therefore does
+not directly model the complete GPU aggregation schedule. Treat these proxies
+as exploratory evidence alongside the recorded epoch times.
+
+The timing CSV uses one shared column schema across phases. Fields not measured
+in a phase are blank. The saved Phase 2 rows were normalized from their original
+shorter schema; timing and accuracy values were preserved. Re-running experiments
+appends rows, and the comparison script prefers Phase 3 configurations when both
+CSVs contain the same dataset/model/reordering.
+
+For the complete sequence, use `bash run_pipeline.sh` (GPU 0),
+`bash run_pipeline.sh 1`, or `GPU=1 bash run_pipeline.sh`. Set `PYTHON` to select
+a Python interpreter. The pipeline installs requirements, downloads both
+datasets, and runs all phases; it is intended for a CUDA machine and can take
+substantial time.

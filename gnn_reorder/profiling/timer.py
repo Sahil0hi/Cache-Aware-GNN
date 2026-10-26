@@ -70,13 +70,30 @@ class EpochTimer:
 
     def save_csv(self, path: str, extra_fields: Optional[dict] = None):
         """Append one summary row to a CSV file."""
-        os.makedirs(os.path.dirname(path), exist_ok=True)
+        os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
         row = self.summary()
         if extra_fields:
             row.update(extra_fields)
-        file_exists = os.path.isfile(path)
+        file_exists = os.path.isfile(path) and os.path.getsize(path) > 0
+        fieldnames = list(row)
+        existing_rows = []
+        if file_exists:
+            with open(path, newline="") as f:
+                reader = csv.DictReader(f)
+                fieldnames = list(reader.fieldnames)
+                existing_rows = list(reader)
+            if any(None in old or any(v is None for v in old.values())
+                   for old in existing_rows):
+                raise ValueError(f"Malformed CSV rows in {path}; repair before appending")
+            new_fields = [key for key in row if key not in fieldnames]
+            if new_fields:
+                fieldnames.extend(new_fields)
+                with open(path, "w", newline="") as f:
+                    writer = csv.DictWriter(f, fieldnames=fieldnames)
+                    writer.writeheader()
+                    writer.writerows(existing_rows)
         with open(path, "a", newline="") as f:
-            writer = csv.DictWriter(f, fieldnames=list(row.keys()))
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
             if not file_exists:
                 writer.writeheader()
             writer.writerow(row)

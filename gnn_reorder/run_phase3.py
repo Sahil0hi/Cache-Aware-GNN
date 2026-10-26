@@ -27,7 +27,7 @@ Configurations run by this script (one dataset at a time):
 For each configuration the script records:
   • ms/epoch  (mean ± std over --epochs measured epochs)
   • TRR       (temporal reuse ratio — cache-efficiency proxy)
-  • ACC       (analytical cache coverage — theoretical upper bound)
+  • ACC       (analytical cache coverage — capacity fraction)
   • Val accuracy (to confirm lossless transformation)
 
 Output files written to results/:

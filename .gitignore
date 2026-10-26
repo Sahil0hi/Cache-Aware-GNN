@@ -20,7 +20,7 @@
 .latexrun.db*
 *.toc
 old
-*.png
+# Final paper figures, page previews, and result plots are versioned.
 datasets/
 
 # Python
