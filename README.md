@@ -1,4 +1,4 @@
-# Cache-Aware Graph Reordering for Efficient GNN Execution on GPUs
+# Cache-Aware Graph Reordering for Efficient Graph Neural Network Execution on GPUs
 
 By Sahil Murtaza, Youke Zhang, Zach Yu, and Albert Liu.
 
