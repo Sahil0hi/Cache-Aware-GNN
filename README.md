@@ -1,6 +1,5 @@
 # Cache-Aware Graph Reordering for Efficient GNN Execution on GPUs
 
-Final project for **CS 6501 · Graph Machine Learning · University of Virginia**.
 By Sahil Murtaza, Youke Zhang, Zach Yu, and Albert Liu.
 
 Reorder graph nodes before GNN training to improve memory locality. The project
